@@ -1,20 +1,3 @@
-
-Conversation ouverte. 1 message lu.
-
-Aller au contenu
-Utiliser Gmail avec un lecteur d'écran
-
-5 sur 6 878
-app_qcm_final_corrige
-Boîte de réception
-
-faycal settar <settar.faycal@gmail.com>
-Pièces jointes
-14:45 (il y a 6 heures)
-À moi
-
- 1 pièce jointe
-  • Analyse effectuée par Gmail
 import streamlit as st
 import pandas as pd
 from docx import Document
@@ -150,5 +133,3 @@ if st.button("4. Générer les fichiers QCM") and excel_file and word_file:
 
         except Exception as e:
             st.error(f"Erreur : {str(e)}")
-app_qcm_final_corrige.py
-Affichage de app_qcm_final_corrige.py en cours...
