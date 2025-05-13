@@ -58,6 +58,9 @@ def ordonner_reponses_figees(bonne, reponses):
     autres = [r for r in reponses if r != bonne]
     return [bonne] + autres
 
+def nettoyer(texte):
+    return texte.encode("ascii", "ignore").decode("ascii")
+
 def melanger_reponses(paragraphs, index_question):
     reponses = []
     i = index_question + 1
@@ -66,7 +69,8 @@ def melanger_reponses(paragraphs, index_question):
         i += 1
     reponses_melangees = random.sample(reponses, len(reponses))
     for j in range(len(reponses_melangees)):
-        paragraphs[index_question + 1 + j].text = reponses_melangees[j]
+        clean = nettoyer(reponses_melangees[j])
+        paragraphs[index_question + 1 + j].text = clean
 
 def figer_reponses(paragraphs, index_question, bonne):
     reponses = []
@@ -76,7 +80,8 @@ def figer_reponses(paragraphs, index_question, bonne):
         i += 1
     reponses_ordonnees = ordonner_reponses_figees(bonne, reponses)
     for j in range(len(reponses_ordonnees)):
-        paragraphs[index_question + 1 + j].text = reponses_ordonnees[j]
+        clean = nettoyer(reponses_ordonnees[j])
+        paragraphs[index_question + 1 + j].text = clean
 
 log_zone = st.empty()
 progress_bar = st.progress(0)
