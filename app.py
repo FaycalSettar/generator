@@ -125,7 +125,7 @@ if st.button("4. Générer les fichiers QCM") and excel_file and word_file:
                                 melanger_reponses(doc.paragraphs, j)
                         j += 1
 
-                    filepath = os.path.join(tmpdirname, filename)
+                    filepath = f"{tmpdirname}/{filename}"
                     doc.save(filepath)
                     zipf.write(filepath, arcname=filename)
 
