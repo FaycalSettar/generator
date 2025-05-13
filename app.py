@@ -1,26 +1,3 @@
-
-Aucun élément sélectionné 
-
-Aller au contenu
-Utiliser Gmail avec un lecteur d'écran
-
-1 sur 6 869
-app
-Boîte de réception
-
-faycal settar <settar.faycal@gmail.com>
-Pièces jointes
-14:22 (il y a 0 minute)
-À moi
-
- 1 pièce jointe
-  • Analyse effectuée par Gmail
-Nouveau message :
-Nouveau message
-RéduireFenêtre externeFermer
-Nouveau message :
-Nouveau message
-RéduireFenêtre externeFermer
 import streamlit as st
 import pandas as pd
 from docx import Document
