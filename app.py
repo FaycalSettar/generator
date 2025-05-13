@@ -22,7 +22,7 @@ with st.expander("Étape 1: Importation des fichiers", expanded=True):
 # SECTION 2: DÉTECTION DES QUESTIONS
 # =============================================
 def detecter_questions(doc):
-    """Détecte les questions et leurs réponses avec la réponse correcte originale"""
+    """Détecte les questions et leur réponse correcte originale"""
     questions = []
     current_question = None
     
@@ -43,9 +43,9 @@ def detecter_questions(doc):
         elif current_question and re.match(r'^[A-D][\s\-–—).]+\s*.+', texte):
             # Extraction des composants
             lettre = texte[0].upper()
-            texte_reponse = texte[1:].split("{{checkbox}}")
-            is_correct = len(texte_reponse) > 1
-            texte_clean = texte_reponse[0].strip().lstrip('-–—). ')
+            parts = texte.split("{{checkbox}}")
+            is_correct = len(parts) > 1
+            texte_clean = parts[0].replace("{{checkbox}}", "").strip().lstrip('-–—). ')
             
             current_question["reponses"].append({
                 "index": i,
@@ -64,7 +64,7 @@ def detecter_questions(doc):
 # SECTION 3: CONFIGURATION DES QUESTIONS
 # =============================================
 if word_file:
-    # Initialisation de la session
+    # Initialisation session
     if 'questions' not in st.session_state:
         doc = Document(word_file)
         st.session_state.questions = detecter_questions(doc)
@@ -106,7 +106,7 @@ if word_file:
 # SECTION 4: FONCTIONS DE GÉNÉRATION
 # =============================================
 def generer_document(row, template_path):
-    """Génère un document individuel avec gestion avancée des checkboxes"""
+    """Génère un document avec une seule réponse cochée par question"""
     try:
         doc = Document(template_path)
         replacements = {
@@ -117,7 +117,7 @@ def generer_document(row, template_path):
             '{{date_evaluation}}': str(row['Date Évaluation'])
         }
 
-        # Remplacement des variables générales
+        # Remplacement des variables
         for para in doc.paragraphs:
             for key, value in replacements.items():
                 para.text = para.text.replace(key, value)
@@ -128,12 +128,12 @@ def generer_document(row, template_path):
             is_figee = st.session_state.figees.get(q['index'], False)
             
             if is_figee:
-                # Réponses figées avec sélection manuelle
+                # Réponses figées
                 bonne_idx = st.session_state.reponses_correctes.get(q['index'], q['correct_idx'])
                 reponse_correcte = reponses.pop(bonne_idx)
                 reponses.insert(0, reponse_correcte)
             else:
-                # Mélange aléatoire avec conservation de la bonne réponse
+                # Mélanger en conservant la bonne réponse
                 random.shuffle(reponses)
                 correct_reponse = next((r for r in reponses if r['correct']), None)
                 if correct_reponse:
@@ -190,7 +190,7 @@ if excel_file and word_file and st.session_state.get('questions'):
                             st.error(f"Échec pour {row['Prénom']} {row['Nom']} : {str(e)}")
                             continue
 
-                # Téléchargement final
+                # Téléchargement
                 with open(zip_path, "rb") as f:
                     st.success("✅ Génération terminée avec succès !")
                     st.download_button(
