@@ -19,7 +19,7 @@ with st.expander("Étape 1: Importation des fichiers", expanded=True):
     word_file = st.file_uploader("Modèle Word", type="docx")
 
 # =============================================
-# SECTION 2: DÉTECTION DES QUESTIONS (VERSION FINALE)
+# SECTION 2: DÉTECTION DES QUESTIONS
 # =============================================
 def detecter_questions(doc):
     """Détection précise des questions et réponses avec regex améliorée"""
@@ -56,7 +56,7 @@ def detecter_questions(doc):
     return [q for q in questions if len(q['reponses']) >= 2]
 
 # =============================================
-# SECTION 3: CONFIGURATION DES QUESTIONS
+# SECTION 3: CONFIGURATION DES QUESTIONS (CORRIGÉE)
 # =============================================
 if word_file:
     # Initialisation session
@@ -84,7 +84,8 @@ if word_file:
         
         with col2:
             if figer:
-                options = [f"{r['lettre']} - {r['texte'].replace('{{checkbox}}', '').strip()" for r in q['reponses']]
+                # LIGNE CORRIGÉE
+                options = [f"{r['lettre']} - {r['texte'].replace('{{checkbox}}', '').strip()}" for r in q['reponses']]
                 
                 if not options:
                     st.error("Aucune réponse valide !")
@@ -102,7 +103,7 @@ if word_file:
                 st.session_state.reponses_correctes[q_id] = options.index(bonne)
 
 # =============================================
-# SECTION 4: FONCTIONS DE GÉNÉRATION (CORRIGÉE)
+# SECTION 4: FONCTIONS DE GÉNÉRATION
 # =============================================
 def generer_document(row, template_path):
     """Génération robuste avec gestion correcte des checkboxes"""
