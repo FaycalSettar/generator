@@ -47,26 +47,29 @@ if word_file:
     st.write("Sélectionnez les questions à figer et choisissez la bonne réponse :")
     
     for q in questions_data:
-        col1, col2, col3 = st.columns([1, 3, 3])
+        col1, col2 = st.columns([2, 4])
         with col1:
             figer = st.checkbox(
-                f"Q{q['texte'].split('.')[0]}",
+                f"Question {q['texte'].split('.')[0]}",
                 key=f"figer_{q['index']}",
-                help="Cocher pour figer cette question"
+                help=q['texte']
             )
-        with col2 if figer else col3:
+        with col2:
             if figer:
                 reponses = [r.split(' ', 1)[1] for r in q["reponses"]]
                 bonne = st.selectbox(
-                    f"Bonne réponse pour Q{q['texte'].split('.')[0]}",
+                    f"Bonne réponse pour : {q['texte'][:50]}...",
                     options=reponses,
                     key=f"bonne_{q['index']}",
-                    format_func=lambda x: x.split(' ', 1)[1]
+                    format_func=lambda x: x
                 )
                 st.session_state.figees[q["index"]] = True
                 st.session_state.reponses_correctes[q["index"]] = f"{q['reponses'][reponses.index(bonne)][0]} {bonne}"
             else:
-                st.write("Réponses mélangées aléatoirement")
+                if q["index"] in st.session_state.figees:
+                    del st.session_state.figees[q["index"]]
+                if q["index"] in st.session_state.reponses_correctes:
+                    del st.session_state.reponses_correctes[q["index"]]
 
 def melanger_reponses(paragraphs, index_question):
     """Mélange aléatoirement les réponses d'une question"""
@@ -100,7 +103,7 @@ def figer_reponses(paragraphs, index_question, bonne_reponse):
 if st.button("4. Générer les QCM personnalisés") and excel_file and word_file:
     with tempfile.TemporaryDirectory() as tmpdirname:
         try:
-            # Lecture des données
+            # Vérification des colonnes Excel
             df = pd.read_excel(excel_file)
             required_columns = ['Prénom', 'Nom', 'Email', 'Référence Session', 'Date Évaluation']
             
@@ -121,7 +124,7 @@ if st.button("4. Générer les QCM personnalisés") and excel_file and word_file
                 status_text = st.empty()
 
                 for index, row in df.iterrows():
-                    # Récupération des données
+                    # Extraction des données
                     prenom = str(row['Prénom']).strip()
                     nom = str(row['Nom']).strip()
                     email = str(row['Email']).strip()
@@ -135,7 +138,7 @@ if st.button("4. Générer les QCM personnalisés") and excel_file and word_file
                     # Création du document
                     doc = Document(word_path)
                     
-                    # Remplacement des variables générales
+                    # Dictionnaire de remplacement
                     replacements = {
                         '{{prenom}}': prenom,
                         '{{nom}}': nom,
@@ -144,28 +147,28 @@ if st.button("4. Générer les QCM personnalisés") and excel_file and word_file
                         '{{date_evaluation}}': date_eval
                     }
 
+                    # Remplacement général des variables
                     for para in doc.paragraphs:
                         for key, value in replacements.items():
-                            if key in para.text:
-                                para.text = para.text.replace(key, value)
+                            para.text = para.text.replace(key, value)
 
-                    # Traitement des questions
+                    # Traitement des questions et réponses
                     for q in questions_data:
-                        j = q['index']
+                        para_index = q['index']
                         
-                        # Gestion de la case à cocher
-                        checkbox = "☑" if j in st.session_state.figees else "☐"
-                        doc.paragraphs[j].text = doc.paragraphs[j].text.replace("{{checkbox}}", checkbox)
+                        # Remplacement de la checkbox
+                        checkbox_status = "☑" if para_index in st.session_state.figees else "☐"
+                        doc.paragraphs[para_index].text = doc.paragraphs[para_index].text.replace("{{checkbox}}", checkbox_status)
                         
                         # Gestion des réponses
-                        if j in st.session_state.figees:
-                            bonne_original = st.session_state.reponses_correctes[j]
+                        if para_index in st.session_state.figees:
+                            bonne_original = st.session_state.reponses_correctes[para_index]
                             bonne_replaced = bonne_original
                             for key, value in replacements.items():
                                 bonne_replaced = bonne_replaced.replace(key, value)
-                            figer_reponses(doc.paragraphs, j, bonne_replaced)
+                            figer_reponses(doc.paragraphs, para_index, bonne_replaced)
                         else:
-                            melanger_reponses(doc.paragraphs, j)
+                            melanger_reponses(doc.paragraphs, para_index)
 
                     # Sauvegarde du fichier
                     filename = f"QCM_{safe_prenom}_{safe_nom}_{ref_session}.docx"
@@ -178,16 +181,16 @@ if st.button("4. Générer les QCM personnalisés") and excel_file and word_file
                     progress_bar.progress(progress)
                     status_text.write(f"Progression : {int(progress*100)}% - {index+1}/{total} fichiers générés")
 
-            # Téléchargement du ZIP final
+            # Téléchargement final
             with open(zip_path, "rb") as f:
-                st.success("Génération terminée avec succès !")
+                st.success("🎉 Génération terminée avec succès !")
                 st.download_button(
-                    label="📥 Télécharger tous les QCM",
+                    label="📥 Télécharger l'archive ZIP",
                     data=f,
                     file_name="QCM_personnalises.zip",
                     mime="application/zip"
                 )
 
         except Exception as e:
-            st.error(f"Erreur lors de la génération : {str(e)}")
-            st.error("Vérifiez le format de vos fichiers et les données saisies.")
+            st.error(f"🚨 Erreur lors de la génération : {str(e)}")
+            st.error("Vérifiez : format des fichiers, noms de colonnes, et données manquantes.")
