@@ -19,26 +19,27 @@ with st.expander("Étape 1: Importation des fichiers", expanded=True):
     word_file = st.file_uploader("Modèle Word", type="docx")
 
 # =============================================
-# SECTION 2: DÉTECTION DES QUESTIONS
+# SECTION 2: DÉTECTION DES QUESTIONS (CORRIGÉE)
 # =============================================
 def detecter_questions(doc):
-    """Détection adaptée au template spécifique"""
+    """Détection adaptée aux différents types de tirets"""
     questions = []
     current_question = None
     
     for i, para in enumerate(doc.paragraphs):
         texte = para.text.strip()
         
-        # Détection des questions (format 1.1 - ... ?)
-        if re.match(r'^\d+\.\d+\s*-\s*.+\?$', texte):
+        # Détection des questions avec format '1.1 - ... ?'
+        if re.match(r'^\d+\.\d+\s*[-–—]\s*.+\?$', texte):
             current_question = {
                 "index": i,
                 "texte": texte,
                 "reponses": []
             }
             questions.append(current_question)
-        # Détection des réponses (A - ... {{checkbox}})
-        elif current_question and re.match(r'^[A-D]\s*-\s*.+{{checkbox}}', texte):
+        
+        # Détection des réponses avec différents tirets
+        elif current_question and re.match(r'^[A-D]\s*[-–—]\s*.+{{checkbox}}', texte):
             cleaned = re.sub(r'\s*{{checkbox}}\s*', '', texte)
             current_question["reponses"].append({
                 "index": i,
@@ -49,7 +50,7 @@ def detecter_questions(doc):
     return questions
 
 # =============================================
-# SECTION 3: CONFIGURATION DES QUESTIONS
+# SECTION 3: CONFIGURATION DES QUESTIONS (CORRIGÉE)
 # =============================================
 if word_file:
     if 'questions' not in st.session_state:
@@ -76,6 +77,12 @@ if word_file:
         with col2:
             if figer:
                 options = [r['texte'] for r in q['reponses']]
+                
+                # Vérification de la cohérence des options
+                if not options:
+                    st.error(f"Aucune réponse valide détectée pour {q['texte']}")
+                    continue
+                
                 default_index = st.session_state.reponses_correctes.get(q['index'], 0)
                 
                 bonne = st.selectbox(
@@ -85,8 +92,13 @@ if word_file:
                     key=f"bonne_{unique_key}"
                 )
                 
-                st.session_state.figees[q['index']] = True
-                st.session_state.reponses_correctes[q['index']] = options.index(bonne)
+                # Validation de la sélection
+                if bonne in options:
+                    st.session_state.figees[q['index']] = True
+                    st.session_state.reponses_correctes[q['index']] = options.index(bonne)
+                else:
+                    st.error("Sélection invalide - veuillez recharger le template")
+                    st.stop()
             else:
                 st.session_state.figees[q['index']] = False
 
@@ -94,7 +106,7 @@ if word_file:
 # SECTION 4: FONCTIONS DE GÉNÉRATION
 # =============================================
 def generer_document(row, template_path):
-    """Génère un document individuel"""
+    """Génère un document individuel avec vérification renforcée"""
     try:
         doc = Document(template_path)
         replacements = {
@@ -108,23 +120,28 @@ def generer_document(row, template_path):
         # Remplacement des variables générales
         for para in doc.paragraphs:
             for key, value in replacements.items():
-                if key in para.text:
-                    para.text = para.text.replace(key, value)
+                para.text = para.text.replace(key, value)
 
-        # Traitement des questions
+        # Traitement des questions avec vérification
         for q in st.session_state.questions:
-            # Trouver la bonne réponse
+            if len(q['reponses']) < 2:
+                raise ValueError(f"Question {q['texte']} a moins de 2 réponses")
+
             bonne_index = st.session_state.reponses_correctes.get(q['index'])
             reponses = q['reponses'].copy()
             
             if st.session_state.figees.get(q['index']):
-                # Déplacer la bonne réponse en première position
+                # Vérification de l'index de la bonne réponse
+                if bonne_index is None or bonne_index >= len(reponses):
+                    raise ValueError(f"Index de réponse invalide pour {q['texte']}")
+                
                 bonne_reponse = reponses.pop(bonne_index)
                 reponses = [bonne_reponse] + reponses
+
             else:
                 random.shuffle(reponses)
 
-            # Mise à jour des réponses dans le document
+            # Mise à jour des réponses
             for i, rep in enumerate(reponses):
                 para = doc.paragraphs[rep['index']]
                 checkbox = "☑" if (i == 0 and st.session_state.figees.get(q['index'])) else "☐"
@@ -132,7 +149,7 @@ def generer_document(row, template_path):
 
         return doc
     except Exception as e:
-        st.error(f"Erreur génération pour {row['Prénom']} {row['Nom']}: {str(e)}")
+        st.error(f"Erreur de génération: {str(e)}")
         raise
 
 # =============================================
@@ -151,7 +168,7 @@ if excel_file and word_file and st.session_state.get('questions'):
                     st.error(f"Colonnes manquantes : {', '.join(missing)}")
                     st.stop()
 
-                # Sauvegarde template
+                # Vérification du template
                 template_path = os.path.join(tmpdir, "template.docx")
                 with open(template_path, "wb") as f:
                     f.write(word_file.getbuffer())
@@ -164,22 +181,19 @@ if excel_file and word_file and st.session_state.get('questions'):
                     for idx, row in df.iterrows():
                         try:
                             doc = generer_document(row, template_path)
-                            
-                            # Nom de fichier sécurisé
                             nom_fichier = f"QCM_{re.sub(r'[^a-zA-Z0-9]', '_', str(row['Prénom']))}_{re.sub(r'[^a-zA-Z0-9]', '_', str(row['Nom']))}.docx"
                             doc_path = os.path.join(tmpdir, nom_fichier)
                             doc.save(doc_path)
                             zipf.write(doc_path, nom_fichier)
-                            
                             progress.progress((idx + 1) / len(df))
                             
                         except Exception as e:
-                            st.error(f"Échec pour {row['Prénom']} {row['Nom']}")
+                            st.error(f"Échec pour {row['Prénom']} {row['Nom']}: {str(e)}")
                             continue
 
-                # Téléchargement
+                # Téléchargement final
                 with open(zip_path, "rb") as f:
-                    st.success("Génération terminée avec succès !")
+                    st.success("🎉 Génération terminée avec succès !")
                     st.download_button(
                         "📥 Télécharger l'archive",
                         data=f,
@@ -188,5 +202,5 @@ if excel_file and word_file and st.session_state.get('questions'):
                     )
 
             except Exception as e:
-                st.error(f"ERREUR : {str(e)}")
+                st.error(f"ERREUR CRITIQUE: {str(e)}")
                 st.text(traceback.format_exc())
