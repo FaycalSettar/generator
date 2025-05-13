@@ -22,7 +22,7 @@ with st.expander("Étape 1: Importation des fichiers", expanded=True):
 # SECTION 2: DÉTECTION DES QUESTIONS
 # =============================================
 def detecter_questions(doc):
-    """Détecte les questions et leur réponse correcte originale"""
+    """Détection précise sans duplication des lettres"""
     questions = []
     current_question = None
     
@@ -41,30 +41,28 @@ def detecter_questions(doc):
         
         # Détection des réponses
         elif current_question and re.match(r'^[A-D][\s\-–—).]+\s*.+', texte):
-            # Extraction des composants
-            lettre = texte[0].upper()
-            parts = texte.split("{{checkbox}}")
-            is_correct = len(parts) > 1
-            texte_clean = parts[0].replace("{{checkbox}}", "").strip().lstrip('-–—). ')
-            
-            current_question["reponses"].append({
-                "index": i,
-                "lettre": lettre,
-                "texte": texte_clean,
-                "correct": is_correct
-            })
-            
-            if is_correct:
-                current_question["correct_idx"] = len(current_question["reponses"]) - 1
+            # Extraction propre de la réponse
+            match = re.match(r'^([A-D])[\s\-–—).]+(.+?)({{checkbox}})?\s*$', texte)
+            if match:
+                lettre = match.group(1).strip()
+                texte_rep = match.group(2).strip()
+                is_correct = bool(match.group(3))
+                
+                current_question["reponses"].append({
+                    "index": i,
+                    "texte": f"{lettre} - {texte_rep}",  # Conserve la lettre originale
+                    "correct": is_correct
+                })
+                
+                if is_correct:
+                    current_question["correct_idx"] = len(current_question["reponses"]) - 1
     
-    # Validation finale
     return [q for q in questions if q["correct_idx"] is not None and len(q["reponses"]) >= 2]
 
 # =============================================
 # SECTION 3: CONFIGURATION DES QUESTIONS
 # =============================================
 if word_file:
-    # Initialisation session
     if 'questions' not in st.session_state:
         doc = Document(word_file)
         st.session_state.questions = detecter_questions(doc)
@@ -73,7 +71,6 @@ if word_file:
 
     st.markdown("### Configuration des questions")
     
-    # Affichage des questions
     for q in st.session_state.questions:
         q_id = q['index']
         q_num = q['texte'].split()[0]
@@ -89,7 +86,7 @@ if word_file:
         
         with col2:
             if figer:
-                options = [f"{r['lettre']} - {r['texte']}" for r in q['reponses']]
+                options = [r['texte'] for r in q['reponses']]
                 default_idx = q['correct_idx']
                 
                 bonne = st.selectbox(
@@ -106,7 +103,7 @@ if word_file:
 # SECTION 4: FONCTIONS DE GÉNÉRATION
 # =============================================
 def generer_document(row, template_path):
-    """Génère un document avec une seule réponse cochée par question"""
+    """Génération sans duplication avec une seule bonne réponse"""
     try:
         doc = Document(template_path)
         replacements = {
@@ -120,7 +117,8 @@ def generer_document(row, template_path):
         # Remplacement des variables
         for para in doc.paragraphs:
             for key, value in replacements.items():
-                para.text = para.text.replace(key, value)
+                if key in para.text:
+                    para.text = para.text.replace(key, value)
 
         # Traitement des questions
         for q in st.session_state.questions:
@@ -128,23 +126,22 @@ def generer_document(row, template_path):
             is_figee = st.session_state.figees.get(q['index'], False)
             
             if is_figee:
-                # Réponses figées
+                # Déplacement de la réponse sélectionnée
                 bonne_idx = st.session_state.reponses_correctes.get(q['index'], q['correct_idx'])
                 reponse_correcte = reponses.pop(bonne_idx)
                 reponses.insert(0, reponse_correcte)
             else:
-                # Mélanger en conservant la bonne réponse
+                # Mélange aléatoire en conservant la bonne réponse
                 random.shuffle(reponses)
-                correct_reponse = next((r for r in reponses if r['correct']), None)
-                if correct_reponse:
-                    reponses.remove(correct_reponse)
-                    reponses.insert(random.randint(0, len(reponses)), correct_reponse)
+                correct_idx = next(i for i, r in enumerate(reponses) if r['correct'])
+                reponse_correcte = reponses.pop(correct_idx)
+                reponses.insert(random.randint(0, len(reponses)), reponse_correcte)
 
-            # Mise à jour des réponses
+            # Mise à jour du document
             for i, rep in enumerate(reponses):
                 para = doc.paragraphs[rep['index']]
                 checkbox = "☑" if rep['correct'] else "☐"
-                para.text = f"{rep['lettre']} - {rep['texte']} {checkbox}"
+                para.text = f"{rep['texte']} {checkbox}"
 
         return doc
     except Exception as e:
