@@ -5,6 +5,7 @@ import random
 import os
 import tempfile
 from zipfile import ZipFile
+import re
 
 st.set_page_config(page_title="Générateur de QCM", layout="centered")
 st.title("Générateur de QCM personnalisés avec contrôle avancé")
@@ -95,6 +96,8 @@ if st.button("4. Générer les fichiers QCM") and excel_file and word_file:
 
                 for i, row in df.iterrows():
                     prenom, nom = row["Prénom"], row["Nom"]
+                    safe_prenom = re.sub(r'[\\/*?:"<>|]', "_", str(prenom))
+                    safe_nom = re.sub(r'[\\/*?:"<>|]', "_", str(nom))
                     doc = Document(word_path)
 
                     for para in doc.paragraphs:
@@ -109,7 +112,7 @@ if st.button("4. Générer les fichiers QCM") and excel_file and word_file:
                                 melanger_reponses(doc.paragraphs, j)
                         j += 1
 
-                    filename = f"QCM_{prenom}_{nom}.docx"
+                    filename = f"QCM_{safe_prenom}_{safe_nom}.docx"
                     filepath = os.path.join(tmpdirname, filename)
                     doc.save(filepath)
                     zipf.write(filepath, arcname=filename)
