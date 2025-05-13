@@ -22,50 +22,55 @@ with st.expander("Étape 1: Importation des fichiers", expanded=True):
 # SECTION 2: DÉTECTION DES QUESTIONS
 # =============================================
 def detecter_questions(doc):
-    """Détection précise des questions et réponses avec regex améliorée"""
+    """Détecte les questions et leurs réponses avec la réponse correcte originale"""
     questions = []
     current_question = None
-    sep_pattern = r'[\s\-–—).]+'
     
     for i, para in enumerate(doc.paragraphs):
         texte = para.text.strip()
         
         # Détection des questions
-        if re.match(r'^\d+\.\d+[\.\s\-–—]*.*\?$', texte):
+        if re.match(r'^\d+\.\d+\s*[-–—)\s.]*\s*.+\?$', texte):
             current_question = {
                 "index": i,
                 "texte": texte,
-                "reponses": []
+                "reponses": [],
+                "correct_idx": None
             }
             questions.append(current_question)
         
-        # Détection des réponses avec séparateur générique
-        elif current_question and re.match(r'^[A-D][\s\-–—).]+', texte):
-            match = re.match(r'^([A-D])' + sep_pattern + r'(.*)', texte)
-            if match:
-                lettre = match.group(1).upper()
-                reponse_texte = match.group(2).strip()
-                
-                current_question["reponses"].append({
-                    "index": i,
-                    "lettre": lettre,
-                    "texte": reponse_texte
-                })
+        # Détection des réponses
+        elif current_question and re.match(r'^[A-D][\s\-–—).]+\s*.+', texte):
+            # Extraction des composants
+            lettre = texte[0].upper()
+            texte_reponse = texte[1:].split("{{checkbox}}")
+            is_correct = len(texte_reponse) > 1
+            texte_clean = texte_reponse[0].strip().lstrip('-–—). ')
+            
+            current_question["reponses"].append({
+                "index": i,
+                "lettre": lettre,
+                "texte": texte_clean,
+                "correct": is_correct
+            })
+            
+            if is_correct:
+                current_question["correct_idx"] = len(current_question["reponses"]) - 1
     
     # Validation finale
-    return [q for q in questions if len(q['reponses']) >= 2]
+    return [q for q in questions if q["correct_idx"] is not None and len(q["reponses"]) >= 2]
 
 # =============================================
-# SECTION 3: CONFIGURATION DES QUESTIONS (CORRIGÉE)
+# SECTION 3: CONFIGURATION DES QUESTIONS
 # =============================================
 if word_file:
-    # Initialisation session
+    # Initialisation de la session
     if 'questions' not in st.session_state:
         doc = Document(word_file)
         st.session_state.questions = detecter_questions(doc)
         st.session_state.figees = {}
         st.session_state.reponses_correctes = {}
-    
+
     st.markdown("### Configuration des questions")
     
     # Affichage des questions
@@ -84,14 +89,9 @@ if word_file:
         
         with col2:
             if figer:
-                # LIGNE CORRIGÉE
-                options = [f"{r['lettre']} - {r['texte'].replace('{{checkbox}}', '').strip()}" for r in q['reponses']]
+                options = [f"{r['lettre']} - {r['texte']}" for r in q['reponses']]
+                default_idx = q['correct_idx']
                 
-                if not options:
-                    st.error("Aucune réponse valide !")
-                    continue
-                
-                default_idx = st.session_state.reponses_correctes.get(q_id, 0)
                 bonne = st.selectbox(
                     f"Bonne réponse pour {q_num}",
                     options=options,
@@ -106,7 +106,7 @@ if word_file:
 # SECTION 4: FONCTIONS DE GÉNÉRATION
 # =============================================
 def generer_document(row, template_path):
-    """Génération robuste avec gestion correcte des checkboxes"""
+    """Génère un document individuel avec gestion avancée des checkboxes"""
     try:
         doc = Document(template_path)
         replacements = {
@@ -117,37 +117,34 @@ def generer_document(row, template_path):
             '{{date_evaluation}}': str(row['Date Évaluation'])
         }
 
-        # Remplacement des variables globales
+        # Remplacement des variables générales
         for para in doc.paragraphs:
             for key, value in replacements.items():
                 para.text = para.text.replace(key, value)
 
         # Traitement des questions
         for q in st.session_state.questions:
-            if not q['reponses']:
-                continue
-                
             reponses = q['reponses'].copy()
             is_figee = st.session_state.figees.get(q['index'], False)
             
             if is_figee:
-                # Déplacer la bonne réponse en première position
-                bonne_idx = st.session_state.reponses_correctes.get(q['index'], 0)
-                if 0 <= bonne_idx < len(reponses):
-                    reponse_correcte = reponses.pop(bonne_idx)
-                    reponses.insert(0, reponse_correcte)
-            
+                # Réponses figées avec sélection manuelle
+                bonne_idx = st.session_state.reponses_correctes.get(q['index'], q['correct_idx'])
+                reponse_correcte = reponses.pop(bonne_idx)
+                reponses.insert(0, reponse_correcte)
             else:
+                # Mélange aléatoire avec conservation de la bonne réponse
                 random.shuffle(reponses)
+                correct_reponse = next((r for r in reponses if r['correct']), None)
+                if correct_reponse:
+                    reponses.remove(correct_reponse)
+                    reponses.insert(random.randint(0, len(reponses)), correct_reponse)
 
             # Mise à jour des réponses
             for i, rep in enumerate(reponses):
                 para = doc.paragraphs[rep['index']]
-                checkbox = "☑" if (i == 0 and is_figee) else "☐"
-                
-                # Construction du texte avec checkbox
-                texte_original = rep['texte'].replace('{{checkbox}}', checkbox)
-                para.text = f"{rep['lettre']} - {texte_original}"
+                checkbox = "☑" if rep['correct'] else "☐"
+                para.text = f"{rep['lettre']} - {rep['texte']} {checkbox}"
 
         return doc
     except Exception as e:
@@ -193,7 +190,7 @@ if excel_file and word_file and st.session_state.get('questions'):
                             st.error(f"Échec pour {row['Prénom']} {row['Nom']} : {str(e)}")
                             continue
 
-                # Téléchargement
+                # Téléchargement final
                 with open(zip_path, "rb") as f:
                     st.success("✅ Génération terminée avec succès !")
                     st.download_button(
