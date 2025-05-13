@@ -16,36 +16,40 @@ st.title("Générateur de QCM personnalisés")
 # =============================================
 with st.expander("Étape 1: Importation des fichiers", expanded=True):
     excel_file = st.file_uploader("Fichier Excel (colonnes: Prénom, Nom, Email, Référence Session, Date Évaluation)", type="xlsx")
-    word_file = st.file_uploader("Modèle Word (doit contenir {{checkbox}})", type="docx")
+    word_file = st.file_uploader("Modèle Word", type="docx")
 
 # =============================================
-# SECTION 2: CONFIGURATION DES QUESTIONS
+# SECTION 2: DÉTECTION DES QUESTIONS
 # =============================================
 def detecter_questions(doc):
-    """Détection améliorée des questions dans le document Word"""
+    """Détection adaptée au template spécifique"""
     questions = []
+    current_question = None
+    
     for i, para in enumerate(doc.paragraphs):
         texte = para.text.strip()
         
-        # Vérification du pattern: numéro + checkbox + texte + ?
-        if re.match(r'^\d+\.\s*{{checkbox}}.*\?$', texte):
-            reponses = []
-            j = i + 1
-            while j < len(doc.paragraphs):
-                ligne = doc.paragraphs[j].text.strip()
-                if re.match(r'^[A-D]\.\s+.+', ligne):
-                    reponses.append(ligne)
-                    j += 1
-                else:
-                    break
-            if len(reponses) >= 2:
-                questions.append({
-                    "index": i,
-                    "texte": texte,
-                    "reponses": reponses
-                })
+        # Détection des questions (format 1.1 - ... ?)
+        if re.match(r'^\d+\.\d+\s*-\s*.+\?$', texte):
+            current_question = {
+                "index": i,
+                "texte": texte,
+                "reponses": []
+            }
+            questions.append(current_question)
+        # Détection des réponses (A - ... {{checkbox}})
+        elif current_question and re.match(r'^[A-D]\s*-\s*.+{{checkbox}}', texte):
+            current_question["reponses"].append({
+                "index": i,
+                "texte": texte,
+                "lettre": texte[0]
+            })
+    
     return questions
 
+# =============================================
+# SECTION 3: CONFIGURATION DES QUESTIONS
+# =============================================
 if word_file and not st.session_state.get('config_done'):
     try:
         doc = Document(word_file)
@@ -62,25 +66,28 @@ if word_file and not st.session_state.get('config_done'):
         with st.expander("Étape 2: Configuration des questions", expanded=True):
             st.write("Cochez les questions à figer et sélectionnez les bonnes réponses :")
             
-            for q in questions:
+            for q in st.session_state.questions:
                 col1, col2 = st.columns([1, 5])
                 with col1:
                     figer = st.checkbox(
-                        f"Q{q['texte'].split('.')[0]}",
+                        f"Q{q['texte'].split(' ')[0]}",
                         key=f"figer_{q['index']}",
-                        help="Cocher pour figer cette question"
+                        help=q['texte']
                     )
                 with col2:
                     if figer:
-                        options = [r.split(' ', 1)[1] for r in q['reponses']]
+                        options = [r['texte'].split('{{checkbox}}')[0].strip() for r in q['reponses']]
                         bonne = st.selectbox(
-                            f"Bonne réponse pour Q{q['texte'].split('.')[0]}",
+                            f"Bonne réponse pour {q['texte'].split(' ')[0]}",
                             options=options,
                             key=f"bonne_{q['index']}",
                             format_func=lambda x: x
                         )
                         st.session_state.figees[q["index"]] = True
-                        st.session_state.reponses_correctes[q["index"]] = f"{q['reponses'][options.index(bonne)][0]} {bonne}"
+                        st.session_state.reponses_correctes[q["index"]] = next(
+                            r['lettre'] for r in q['reponses'] 
+                            if r['texte'].split('{{checkbox}}')[0].strip() == bonne
+                        )
         
         st.session_state.config_done = True
 
@@ -89,8 +96,32 @@ if word_file and not st.session_state.get('config_done'):
         st.stop()
 
 # =============================================
-# SECTION 3: GENERATION DES QCM
+# SECTION 4: FONCTIONS DE GÉNÉRATION
 # =============================================
+def remplacer_variables(paragraphs, replacements):
+    """Remplacement des variables globales"""
+    for para in paragraphs:
+        for key, value in replacements.items():
+            if key in para.text:
+                para.text = para.text.replace(key, value)
+
+def traiter_question(doc, q, replacements, bonne_reponse=None):
+    """Traitement d'une question individuelle"""
+    # Remplacement des variables dans la question
+    for key, value in replacements.items():
+        doc.paragraphs[q['index']].text = doc.paragraphs[q['index']].text.replace(key, value)
+    
+    # Traitement des réponses
+    for reponse in q['reponses']:
+        para = doc.paragraphs[reponse['index']]
+        texte = para.text.replace('{{checkbox}}', '☑' if bonne_reponse == reponse['lettre'] else '☐')
+        
+        # Remplacement des variables dans les réponses
+        for key, value in replacements.items():
+            texte = texte.replace(key, value)
+        
+        para.text = texte
+
 def generer_qcm(row, template_path, questions):
     """Génère un QCM individualisé"""
     try:
@@ -103,48 +134,27 @@ def generer_qcm(row, template_path, questions):
             '{{date_evaluation}}': str(row['Date Évaluation'])
         }
 
-        # Remplacement des variables générales
-        for para in doc.paragraphs:
-            for key, value in replacements.items():
-                if key in para.text:
-                    para.text = para.text.replace(key, value)
+        # Remplacement des variables globales
+        remplacer_variables(doc.paragraphs, replacements)
 
         # Traitement des questions
         for q in questions:
-            idx = q['index']
-            
-            # Remplacement checkbox
-            checkbox = "☑" if idx in st.session_state.figees else "☐"
-            doc.paragraphs[idx].text = doc.paragraphs[idx].text.replace("{{checkbox}}", checkbox)
-            
-            # Gestion des réponses
-            if idx in st.session_state.figees:
-                bonne = st.session_state.reponses_correctes[idx]
-                for key, value in replacements.items():
-                    bonne = bonne.replace(key, value)
-                
-                # Réordonnancement
-                reponses = [r.text for r in doc.paragraphs[idx+1:idx+1+len(q['reponses'])]]
-                if bonne in reponses:
-                    reponses.remove(bonne)
-                    reponses = [bonne] + reponses
-                else:
-                    st.error(f"Réponse correcte non trouvée pour Q{q['texte'].split('.')[0]}")
-                
-                for i, r in enumerate(reponses):
-                    doc.paragraphs[idx+1+i].text = r
+            bonne = st.session_state.reponses_correctes.get(q['index'])
+            if st.session_state.figees.get(q['index']):
+                traiter_question(doc, q, replacements, bonne)
             else:
-                # Mélange aléatoire
-                reponses = [r.text for r in doc.paragraphs[idx+1:idx+1+len(q['reponses'])]]
-                random.shuffle(reponses)
-                for i, r in enumerate(reponses):
-                    doc.paragraphs[idx+1+i].text = r
+                # Mélanger les réponses
+                random.shuffle(q['reponses'])
+                traiter_question(doc, q, replacements)
 
         return doc
     except Exception as e:
         st.error(f"Erreur lors de la génération pour {row['Prénom']} {row['Nom']}: {str(e)}")
         raise
 
+# =============================================
+# SECTION 5: GÉNÉRATION PRINCIPALE
+# =============================================
 if excel_file and word_file and st.session_state.get('config_done'):
     if st.button("Générer les QCM", type="primary"):
         with tempfile.TemporaryDirectory() as tmpdir:
