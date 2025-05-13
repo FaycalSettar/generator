@@ -58,9 +58,6 @@ def ordonner_reponses_figees(bonne, reponses):
     autres = [r for r in reponses if r != bonne]
     return [bonne] + autres
 
-def nettoyer(texte):
-    return texte.encode("ascii", "ignore").decode("ascii")
-
 def melanger_reponses(paragraphs, index_question):
     reponses = []
     i = index_question + 1
@@ -69,8 +66,7 @@ def melanger_reponses(paragraphs, index_question):
         i += 1
     reponses_melangees = random.sample(reponses, len(reponses))
     for j in range(len(reponses_melangees)):
-        clean = nettoyer(reponses_melangees[j])
-        paragraphs[index_question + 1 + j].text = clean
+        paragraphs[index_question + 1 + j].text = reponses_melangees[j]
 
 def figer_reponses(paragraphs, index_question, bonne):
     reponses = []
@@ -80,8 +76,7 @@ def figer_reponses(paragraphs, index_question, bonne):
         i += 1
     reponses_ordonnees = ordonner_reponses_figees(bonne, reponses)
     for j in range(len(reponses_ordonnees)):
-        clean = nettoyer(reponses_ordonnees[j])
-        paragraphs[index_question + 1 + j].text = clean
+        paragraphs[index_question + 1 + j].text = reponses_ordonnees[j]
 
 log_zone = st.empty()
 progress_bar = st.progress(0)
@@ -93,26 +88,32 @@ if st.button("4. Générer les fichiers QCM") and excel_file and word_file:
             df = pd.read_excel(excel_file)
             word_path = os.path.join(tmpdirname, "template.docx")
             with open(word_path, "wb") as f:
-                f.write(word_file.read())
+                f.write(word_file.getbuffer())
 
             zip_path = os.path.join(tmpdirname, "QCM_generes.zip")
             with ZipFile(zip_path, 'w') as zipf:
                 total = len(df)
 
                 for i, row in df.iterrows():
-                    prenom, nom = row["Prénom"], row["Nom"]
-                    safe_prenom = re.sub(r'[\\/*?:"<>|]', "_", str(prenom))
-                    safe_nom = re.sub(r'[\\/*?:"<>|]', "_", str(nom))
+                    prenom = str(row["Prénom"])
+                    nom = str(row["Nom"])
+                    safe_prenom = re.sub(r'[\\/*?:"<>|]', "_", prenom)
+                    safe_nom = re.sub(r'[\\/*?:"<>|]', "_", nom)
                     doc = Document(word_path)
 
+                    # Remplacement des placeholders
                     for para in doc.paragraphs:
-                        para.text = para.text.replace("{{prenom}}", str(prenom)).replace("{{nom}}", str(nom))
+                        para.text = para.text.replace("{{prenom}}", prenom).replace("{{nom}}", nom)
 
+                    # Traitement des questions
                     j = 0
                     while j < len(doc.paragraphs):
                         if doc.paragraphs[j].text.strip().endswith("?"):
                             if j in figees and j in reponses_correctes:
-                                figer_reponses(doc.paragraphs, j, reponses_correctes[j])
+                                # Remplacement des placeholders dans la bonne réponse
+                                bonne_original = reponses_correctes[j]
+                                bonne_replaced = bonne_original.replace("{{prenom}}", prenom).replace("{{nom}}", nom)
+                                figer_reponses(doc.paragraphs, j, bonne_replaced)
                             else:
                                 melanger_reponses(doc.paragraphs, j)
                         j += 1
