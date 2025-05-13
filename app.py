@@ -19,38 +19,41 @@ with st.expander("Étape 1: Importation des fichiers", expanded=True):
     word_file = st.file_uploader("Modèle Word", type="docx")
 
 # =============================================
-# SECTION 2: DÉTECTION DES QUESTIONS
+# SECTION 2: DÉTECTION DES QUESTIONS (CORRIGÉE)
 # =============================================
 def detecter_questions(doc):
-    """Détection précise sans duplication des lettres"""
+    """Détection précise des questions avec regex améliorée"""
     questions = []
     current_question = None
+    pattern = re.compile(r'^(\d+\.\d+)\s*[-–—)\s.]*\s*(.+?)\?$')
+    reponse_pattern = re.compile(r'^([A-D])[\s\-–—).]+\s*(.*?)({{checkbox}})?\s*$')
     
     for i, para in enumerate(doc.paragraphs):
         texte = para.text.strip()
         
         # Détection des questions
-        if re.match(r'^\d+\.\d+\s*[-–—)\s.]*\s*.+\?$', texte):
+        match_question = pattern.match(texte)
+        if match_question:
             current_question = {
                 "index": i,
-                "texte": texte,
+                "texte": f"{match_question.group(1)} - {match_question.group(2)}?",
                 "reponses": [],
                 "correct_idx": None
             }
             questions.append(current_question)
         
         # Détection des réponses
-        elif current_question and re.match(r'^[A-D][\s\-–—).]+\s*.+', texte):
-            # Extraction propre de la réponse
-            match = re.match(r'^([A-D])[\s\-–—).]+(.+?)({{checkbox}})?\s*$', texte)
-            if match:
-                lettre = match.group(1).strip()
-                texte_rep = match.group(2).strip()
-                is_correct = bool(match.group(3))
+        elif current_question:
+            match_reponse = reponse_pattern.match(texte)
+            if match_reponse:
+                lettre = match_reponse.group(1)
+                texte_rep = match_reponse.group(2).strip()
+                is_correct = match_reponse.group(3) is not None
                 
                 current_question["reponses"].append({
                     "index": i,
-                    "texte": f"{lettre} - {texte_rep}",  # Conserve la lettre originale
+                    "lettre": lettre,
+                    "texte": texte_rep,
                     "correct": is_correct
                 })
                 
@@ -86,7 +89,7 @@ if word_file:
         
         with col2:
             if figer:
-                options = [r['texte'] for r in q['reponses']]
+                options = [f"{r['lettre']} - {r['texte']}" for r in q['reponses']]
                 default_idx = q['correct_idx']
                 
                 bonne = st.selectbox(
@@ -100,10 +103,10 @@ if word_file:
                 st.session_state.reponses_correctes[q_id] = options.index(bonne)
 
 # =============================================
-# SECTION 4: FONCTIONS DE GÉNÉRATION
+# SECTION 4: FONCTIONS DE GÉNÉRATION (CORRIGÉE)
 # =============================================
 def generer_document(row, template_path):
-    """Génération sans duplication avec une seule bonne réponse"""
+    """Génération avec gestion correcte des checkboxes"""
     try:
         doc = Document(template_path)
         replacements = {
@@ -117,8 +120,7 @@ def generer_document(row, template_path):
         # Remplacement des variables
         for para in doc.paragraphs:
             for key, value in replacements.items():
-                if key in para.text:
-                    para.text = para.text.replace(key, value)
+                para.text = para.text.replace(key, value)
 
         # Traitement des questions
         for q in st.session_state.questions:
@@ -126,22 +128,23 @@ def generer_document(row, template_path):
             is_figee = st.session_state.figees.get(q['index'], False)
             
             if is_figee:
-                # Déplacement de la réponse sélectionnée
+                # Réponses figées
                 bonne_idx = st.session_state.reponses_correctes.get(q['index'], q['correct_idx'])
                 reponse_correcte = reponses.pop(bonne_idx)
                 reponses.insert(0, reponse_correcte)
             else:
-                # Mélange aléatoire en conservant la bonne réponse
+                # Mélanger en conservant la bonne réponse
                 random.shuffle(reponses)
-                correct_idx = next(i for i, r in enumerate(reponses) if r['correct'])
-                reponse_correcte = reponses.pop(correct_idx)
-                reponses.insert(random.randint(0, len(reponses)), reponse_correcte)
+                correct_idx = next((i for i, r in enumerate(reponses) if r['correct']), None)
+                if correct_idx is not None:
+                    reponse_correcte = reponses.pop(correct_idx)
+                    reponses.insert(0, reponse_correcte)
 
             # Mise à jour du document
             for i, rep in enumerate(reponses):
                 para = doc.paragraphs[rep['index']]
-                checkbox = "☑" if rep['correct'] else "☐"
-                para.text = f"{rep['texte']} {checkbox}"
+                checkbox = "☑" if i == 0 else "☐"
+                para.text = f"{rep['lettre']} - {rep['texte']} {checkbox}"
 
         return doc
     except Exception as e:
