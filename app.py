@@ -59,7 +59,7 @@ def ordonner_reponses_figees(bonne, reponses):
     return [bonne] + autres
 
 def nettoyer(texte):
-    return texte.encode("ascii", "ignore").decode("ascii")
+    return texte.encode("ascii", "ignore").decode("ascii").replace("\n", "").replace("\r", "").strip()
 
 def melanger_reponses(paragraphs, index_question):
     reponses = []
@@ -100,13 +100,21 @@ if st.button("4. Générer les fichiers QCM") and excel_file and word_file:
                 total = len(df)
 
                 for i, row in df.iterrows():
-                    prenom, nom = row["Prénom"], row["Nom"]
-                    safe_prenom = re.sub(r'[\\/*?:"<>|]', "_", str(prenom))
-                    safe_nom = re.sub(r'[\\/*?:"<>|]', "_", str(nom))
-                    doc = Document(word_path)
+                    prenom = str(row.get("Prénom", "")).strip()
+                    nom = str(row.get("Nom", "")).strip()
 
+                    if not prenom or not nom:
+                        st.warning(f"⚠️ Ligne {i+2} : prénom ou nom manquant — fichier ignoré.")
+                        continue
+
+                    safe_prenom = re.sub(r'[\\/*?:"<>|\n\r]', "_", prenom)
+                    safe_nom = re.sub(r'[\\/*?:"<>|\n\r]', "_", nom)
+                    base_name = f"{safe_prenom}_{safe_nom}".strip().replace(" ", "_") or "participant"
+                    filename = f"QCM_{base_name}.docx"
+
+                    doc = Document(word_path)
                     for para in doc.paragraphs:
-                        para.text = para.text.replace("{{prenom}}", str(prenom)).replace("{{nom}}", str(nom))
+                        para.text = para.text.replace("{{prenom}}", prenom).replace("{{nom}}", nom)
 
                     j = 0
                     while j < len(doc.paragraphs):
@@ -117,7 +125,6 @@ if st.button("4. Générer les fichiers QCM") and excel_file and word_file:
                                 melanger_reponses(doc.paragraphs, j)
                         j += 1
 
-                    filename = f"QCM_{safe_prenom}_{safe_nom}.docx"
                     filepath = os.path.join(tmpdirname, filename)
                     doc.save(filepath)
                     zipf.write(filepath, arcname=filename)
