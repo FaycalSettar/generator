@@ -96,5 +96,3 @@ if st.button("4. Générer les fichiers QCM") and excel_file and word_file:
 
         except Exception as e:
             st.error(f"Erreur : {str(e)}")
-app.py
-Affichage de app.py en cours...
