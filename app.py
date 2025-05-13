@@ -12,15 +12,14 @@ st.title("Générateur de QCM personnalisés avec contrôle avancé")
 
 # Configuration des uploaders de fichiers
 excel_file = st.file_uploader("1. Importer le fichier Excel (colonnes obligatoires : Prénom, Nom, Email, Référence Session, Date Évaluation)", type="xlsx")
-word_file = st.file_uploader("2. Importer le modèle Word (avec variables {{prenom}}, {{nom}}, {{email}}, {{ref_session}}, {{date_evaluation}})", type="docx")
+word_file = st.file_uploader("2. Importer le modèle Word (avec variables {{checkbox}}, {{prenom}}, {{nom}}, etc.)", type="docx")
 
 def extraire_questions_et_reponses(doc):
     """Extrait les questions et réponses du template Word"""
     questions = []
-    i = 0
-    while i < len(doc.paragraphs):
-        question_text = doc.paragraphs[i].text.strip()
-        if question_text.endswith('?') and question_text[0].isdigit():
+    for i, para in enumerate(doc.paragraphs):
+        text = para.text.strip()
+        if text.startswith(tuple(str(n) for n in range(10))) and '{{checkbox}}' in text and text.endswith('?'):
             reponses = []
             j = i + 1
             while j < len(doc.paragraphs) and doc.paragraphs[j].text.strip().startswith(tuple("ABCD")):
@@ -28,10 +27,9 @@ def extraire_questions_et_reponses(doc):
                 j += 1
             questions.append({
                 "index": i,
-                "texte": question_text,
+                "texte": text,
                 "reponses": reponses
             })
-        i += 1
     return questions
 
 # Initialisation des variables de session
@@ -46,30 +44,29 @@ if word_file:
     questions_data = extraire_questions_et_reponses(doc_temp)
     
     st.markdown("### 3. Configuration des questions")
-    st.write("Sélectionnez les questions à figer et choisissez la bonne réponse à afficher en premier :")
+    st.write("Sélectionnez les questions à figer et choisissez la bonne réponse :")
     
     for q in questions_data:
-        col1, col2 = st.columns([3, 4])
+        col1, col2, col3 = st.columns([1, 3, 3])
         with col1:
             figer = st.checkbox(
-                f"Question {q['texte'].split('.')[0]}",
+                f"Q{q['texte'].split('.')[0]}",
                 key=f"figer_{q['index']}",
-                help=q['texte']
+                help="Cocher pour figer cette question"
             )
-        with col2:
+        with col2 if figer else col3:
             if figer:
+                reponses = [r.split(' ', 1)[1] for r in q["reponses"]]
                 bonne = st.selectbox(
-                    f"Sélectionnez la bonne réponse pour : {q['texte'][:50]}...",
-                    options=q["reponses"],
-                    key=f"bonne_{q['index']}"
+                    f"Bonne réponse pour Q{q['texte'].split('.')[0]}",
+                    options=reponses,
+                    key=f"bonne_{q['index']}",
+                    format_func=lambda x: x.split(' ', 1)[1]
                 )
                 st.session_state.figees[q["index"]] = True
-                st.session_state.reponses_correctes[q["index"]] = bonne
+                st.session_state.reponses_correctes[q["index"]] = f"{q['reponses'][reponses.index(bonne)][0]} {bonne}"
             else:
-                if q["index"] in st.session_state.figees:
-                    del st.session_state.figees[q["index"]]
-                if q["index"] in st.session_state.reponses_correctes:
-                    del st.session_state.reponses_correctes[q["index"]]
+                st.write("Réponses mélangées aléatoirement")
 
 def melanger_reponses(paragraphs, index_question):
     """Mélange aléatoirement les réponses d'une question"""
@@ -138,7 +135,7 @@ if st.button("4. Générer les QCM personnalisés") and excel_file and word_file
                     # Création du document
                     doc = Document(word_path)
                     
-                    # Remplacement des variables
+                    # Remplacement des variables générales
                     replacements = {
                         '{{prenom}}': prenom,
                         '{{nom}}': nom,
@@ -152,19 +149,23 @@ if st.button("4. Générer les QCM personnalisés") and excel_file and word_file
                             if key in para.text:
                                 para.text = para.text.replace(key, value)
 
-                    # Traitement des réponses
-                    j = 0
-                    while j < len(doc.paragraphs):
-                        if doc.paragraphs[j].text.strip().endswith('?'):
-                            if j in st.session_state.figees:
-                                bonne_original = st.session_state.reponses_correctes[j]
-                                bonne_replaced = bonne_original
-                                for key, value in replacements.items():
-                                    bonne_replaced = bonne_replaced.replace(key, value)
-                                figer_reponses(doc.paragraphs, j, bonne_replaced)
-                            else:
-                                melanger_reponses(doc.paragraphs, j)
-                        j += 1
+                    # Traitement des questions
+                    for q in questions_data:
+                        j = q['index']
+                        
+                        # Gestion de la case à cocher
+                        checkbox = "☑" if j in st.session_state.figees else "☐"
+                        doc.paragraphs[j].text = doc.paragraphs[j].text.replace("{{checkbox}}", checkbox)
+                        
+                        # Gestion des réponses
+                        if j in st.session_state.figees:
+                            bonne_original = st.session_state.reponses_correctes[j]
+                            bonne_replaced = bonne_original
+                            for key, value in replacements.items():
+                                bonne_replaced = bonne_replaced.replace(key, value)
+                            figer_reponses(doc.paragraphs, j, bonne_replaced)
+                        else:
+                            melanger_reponses(doc.paragraphs, j)
 
                     # Sauvegarde du fichier
                     filename = f"QCM_{safe_prenom}_{safe_nom}_{ref_session}.docx"
