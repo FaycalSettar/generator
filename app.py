@@ -12,194 +12,205 @@ st.set_page_config(page_title="Générateur de QCM", layout="centered")
 st.title("Générateur de QCM personnalisés")
 
 # =============================================
-# SECTION 1: UPLOAD DES FICHIERS
+# SECTION 1 : UPLOAD DES FICHIERS
 # =============================================
-with st.expander("Étape 1: Importation des fichiers", expanded=True):
-    excel_file = st.file_uploader("Fichier Excel (colonnes: Prénom, Nom, Email, Référence Session, Date Évaluation)", type="xlsx")
-    word_file = st.file_uploader("Modèle Word", type="docx")
+with st.expander("Étape 1 : Importation des fichiers", expanded=True):
+    excel_file      = st.file_uploader("Fichier Excel (%) colonnes : Prénom, Nom, Email, Référence Session, Date Évaluation", type="xlsx")
+    word_file       = st.file_uploader("Modèle Word (.docx)", type="docx")
+    correction_file = st.file_uploader("Fichier de correction (Quizz.xlsx)", type="xlsx")
 
 # =============================================
-# SECTION 2: DÉTECTION DES QUESTIONS (CORRIGÉE)
+# SECTION 2 : DÉTECTION DES QUESTIONS & CORRECTION
 # =============================================
-def detecter_questions(doc):
-    """Détection précise des questions avec regex améliorée"""
+def detecter_questions(doc: Document):
+    """Repère toutes les questions (groupes 1.1, 1.2, …) et leurs réponses brutes."""
     questions = []
-    current_question = None
-    pattern = re.compile(r'^(\d+\.\d+)\s*[-–—)\s.]*\s*(.+?)\?$')
-    reponse_pattern = re.compile(r'^([A-D])[\s\-–—).]+\s*(.*?)({{checkbox}})?\s*$')
-    
-    for i, para in enumerate(doc.paragraphs):
-        texte = para.text.strip()
-        
-        # Détection des questions
-        match_question = pattern.match(texte)
-        if match_question:
-            current_question = {
-                "index": i,
-                "texte": f"{match_question.group(1)} - {match_question.group(2)}?",
-                "reponses": [],
+    current = None
+    # regex question et réponse
+    quest_pat = re.compile(r'^(\d+\.\d+)\s*[-–—)]?\s*(.+?)\?$')
+    rep_pat   = re.compile(r'^([A-D])[\s\-–—).]+\s*(.+)$')
+    for i, p in enumerate(doc.paragraphs):
+        t = p.text.strip()
+        m = quest_pat.match(t)
+        if m:
+            current = {
+                "qnum":       m.group(1),
+                "index":      i,
+                "texte":      f"{m.group(1)} - {m.group(2)}?",
+                "reponses":   [],
                 "correct_idx": None
             }
-            questions.append(current_question)
-        
-        # Détection des réponses
-        elif current_question:
-            match_reponse = reponse_pattern.match(texte)
-            if match_reponse:
-                lettre = match_reponse.group(1)
-                texte_rep = match_reponse.group(2).strip()
-                is_correct = match_reponse.group(3) is not None
-                
-                current_question["reponses"].append({
+            questions.append(current)
+            continue
+        if current:
+            mr = rep_pat.match(t)
+            if mr:
+                lettre = mr.group(1)
+                txt    = mr.group(2).strip()
+                current["reponses"].append({
                     "index": i,
                     "lettre": lettre,
-                    "texte": texte_rep,
-                    "correct": is_correct
+                    "texte": txt,
+                    # correct sera mis à jour juste après
+                    "correct": False
                 })
-                
-                if is_correct:
-                    current_question["correct_idx"] = len(current_question["reponses"]) - 1
-    
-    return [q for q in questions if q["correct_idx"] is not None and len(q["reponses"]) >= 2]
+    return questions
 
-# =============================================
-# SECTION 3: CONFIGURATION DES QUESTIONS
-# =============================================
-if word_file:
-    if 'questions' not in st.session_state:
-        doc = Document(word_file)
-        st.session_state.questions = detecter_questions(doc)
-        st.session_state.figees = {}
-        st.session_state.reponses_correctes = {}
+if word_file and correction_file and excel_file:
+    # Initialisation une seule fois
+    if "questions" not in st.session_state:
+        # 1) Détection brute
+        doc0 = Document(word_file)
+        raw_q = detecter_questions(doc0)
 
-    st.markdown("### Configuration des questions")
-    
-    for q in st.session_state.questions:
-        q_id = q['index']
-        q_num = q['texte'].split()[0]
-        
-        col1, col2 = st.columns([1, 4])
-        with col1:
-            figer = st.checkbox(
-                f"Q{q_num}",
-                value=st.session_state.figees.get(q_id, False),
-                key=f"figer_{q_id}",
-                help=q['texte']
-            )
-        
-        with col2:
-            if figer:
-                options = [f"{r['lettre']} - {r['texte']}" for r in q['reponses']]
-                default_idx = q['correct_idx']
-                
-                bonne = st.selectbox(
-                    f"Bonne réponse pour {q_num}",
-                    options=options,
-                    index=default_idx,
-                    key=f"bonne_{q_id}"
-                )
-                
-                st.session_state.figees[q_id] = True
-                st.session_state.reponses_correctes[q_id] = options.index(bonne)
-
-# =============================================
-# SECTION 4: FONCTIONS DE GÉNÉRATION (CORRIGÉE)
-# =============================================
-def generer_document(row, template_path):
-    """Génération avec gestion correcte des checkboxes"""
-    try:
-        doc = Document(template_path)
-        replacements = {
-            '{{prenom}}': str(row['Prénom']),
-            '{{nom}}': str(row['Nom']),
-            '{{email}}': str(row['Email']),
-            '{{ref_session}}': str(row['Référence Session']),
-            '{{date_evaluation}}': str(row['Date Évaluation'])
+        # 2) Chargement des bonnes réponses
+        corr_df = pd.read_excel(correction_file)
+        # On suppose qu'il y a une colonne "Numéro de la question" et "Réponse correcte"
+        corr_map = {
+            str(r["Numéro de la question"]): r["Réponse correcte"].strip().upper()
+            for _, r in corr_df.iterrows()
         }
 
-        # Remplacement des variables
-        for para in doc.paragraphs:
-            for key, value in replacements.items():
-                para.text = para.text.replace(key, value)
+        # 3) Appliquer la correction sur raw_q
+        questions = []
+        for q in raw_q:
+            correct_letter = corr_map.get(q["qnum"])
+            for idx, rep in enumerate(q["reponses"]):
+                rep["correct"] = (rep["lettre"].upper() == correct_letter)
+                if rep["correct"]:
+                    q["correct_idx"] = idx
+            # On garde seulement si on a trouvé une bonne réponse
+            if q["correct_idx"] is not None:
+                questions.append(q)
+        st.session_state.questions = questions
 
-        # Traitement des questions
-        for q in st.session_state.questions:
-            reponses = q['reponses'].copy()
-            is_figee = st.session_state.figees.get(q['index'], False)
-            
-            if is_figee:
-                # Réponses figées
-                bonne_idx = st.session_state.reponses_correctes.get(q['index'], q['correct_idx'])
-                reponse_correcte = reponses.pop(bonne_idx)
-                reponses.insert(0, reponse_correcte)
-            else:
-                # Mélanger en conservant la bonne réponse
-                random.shuffle(reponses)
-                correct_idx = next((i for i, r in enumerate(reponses) if r['correct']), None)
-                if correct_idx is not None:
-                    reponse_correcte = reponses.pop(correct_idx)
-                    reponses.insert(0, reponse_correcte)
+        # 4) Calcul des résultats par module
+        results_mod = {}
+        for q in questions:
+            mod = q["qnum"].split(".")[0]
+            results_mod[mod] = results_mod.get(mod, 0) + 1
+        total = sum(results_mod.values())
+        st.session_state.results_mod   = results_mod
+        st.session_state.results_total = total
 
-            # Mise à jour du document
-            for i, rep in enumerate(reponses):
-                para = doc.paragraphs[rep['index']]
-                checkbox = "☑" if i == 0 else "☐"
-                para.text = f"{rep['lettre']} - {rep['texte']} {checkbox}"
-
-        return doc
-    except Exception as e:
-        st.error(f"Erreur de génération : {str(e)}")
-        raise
+        # 5) Initialisation du figement (optionnel)
+        st.session_state.figees             = {}
+        st.session_state.reponses_correctes = {}
 
 # =============================================
-# SECTION 5: GÉNÉRATION PRINCIPALE
+# SECTION 3 : CONFIGURATION DES QUESTIONS (FIGER)
 # =============================================
-if excel_file and word_file and st.session_state.get('questions'):
-    if st.button("Générer les QCM", type="primary"):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            try:
-                # Vérification Excel
-                df = pd.read_excel(excel_file)
-                required_cols = ['Prénom', 'Nom', 'Email', 'Référence Session', 'Date Évaluation']
-                
-                if not all(col in df.columns for col in required_cols):
-                    missing = [col for col in required_cols if col not in df.columns]
-                    st.error(f"Colonnes manquantes : {', '.join(missing)}")
-                    st.stop()
+if "questions" in st.session_state:
+    st.markdown("### Étape 2 : configuration des QCM (figer les questions si besoin)")
+    for q in st.session_state.questions:
+        qid = q["index"]
+        num = q["qnum"]
+        c1, c2 = st.columns([1,5])
+        with c1:
+            fig = st.checkbox(f"Q{num}", key=f"fig_{qid}", help=q["texte"])
+            st.session_state.figees[qid] = fig
+        with c2:
+            if fig:
+                opts = [f"{r['lettre']} - {r['texte']}" for r in q["reponses"]]
+                default = q["correct_idx"]
+                sel = st.selectbox(f"Bonne réponse Q{num}", opts, index=default, key=f"sel_{qid}")
+                st.session_state.reponses_correctes[qid] = opts.index(sel)
 
-                # Sauvegarde template
-                template_path = os.path.join(tmpdir, "template.docx")
-                with open(template_path, "wb") as f:
+# =============================================
+# SECTION 4 : GÉNÉRATION D’UN DOC POUR UNE LIGNE
+# =============================================
+def generer_document(row, tpl_path):
+    doc = Document(tpl_path)
+    # → Remplacer les variables de l’entête
+    mapping = {
+        "{{prenom}}":        str(row["Prénom"]),
+        "{{nom}}":           str(row["Nom"]),
+        "{{email}}":         str(row["Email"]),
+        "{{ref_session}}":   str(row["Référence Session"]),
+        "{{date_evaluation}}": str(row["Date Évaluation"])
+    }
+    for p in doc.paragraphs:
+        for k, v in mapping.items():
+            p.text = p.text.replace(k, v)
+
+    # → Traiter chaque question
+    for q in st.session_state.questions:
+        reps = q["reponses"].copy()
+        idx_q = q["index"]
+        # figée ?
+        if st.session_state.figees.get(idx_q, False):
+            ci = st.session_state.reponses_correctes.get(idx_q, q["correct_idx"])
+            bonne = reps.pop(ci)
+            reps.insert(0, bonne)
+        else:
+            random.shuffle(reps)
+            # s'assurer que la bonne reste incluse
+            # (elle y est, car rep.correct définit q["correct_idx"])
+
+        # écrire cases
+        for pos, r in enumerate(reps):
+            p = doc.paragraphs[r["index"]]
+            case = "☑" if r["correct"] else "☐"
+            p.text = f"{r['lettre']} - {r['texte']}   {case}"
+
+    # → Remplacer les placeholders de résultats
+    # Modules 1→5
+    for m, count in st.session_state.results_mod.items():
+        token = f"{{{{result_mod{m}}}}}"
+        for p in doc.paragraphs:
+            p.text = p.text.replace(token, str(count))
+    # Total
+    for p in doc.paragraphs:
+        p.text = p.text.replace("{{result_mod_total}}", str(st.session_state.results_total))
+
+    return doc
+
+# =============================================
+# SECTION 5 : GÉNÉRATION GLOBALE & ZIP
+# =============================================
+if excel_file and word_file and correction_file and st.session_state.get("questions"):
+    st.markdown("---")
+    if st.button("Générer les QCM et résultats"):
+        try:
+            df = pd.read_excel(excel_file)
+            # Vérifier colonnes
+            need = ["Prénom","Nom","Email","Référence Session","Date Évaluation"]
+            miss = [c for c in need if c not in df.columns]
+            if miss:
+                st.error("Colonnes manquantes : " + ", ".join(miss))
+                st.stop()
+
+            with tempfile.TemporaryDirectory() as td:
+                # sauvegarde template
+                tpl = os.path.join(td, "template.docx")
+                with open(tpl, "wb") as f:
                     f.write(word_file.getbuffer())
 
-                # Création archive
-                zip_path = os.path.join(tmpdir, "QCM_Generes.zip")
-                with ZipFile(zip_path, 'w') as zipf:
-                    progress_bar = st.progress(0)
-                    
-                    for idx, row in df.iterrows():
+                # créer ZIP
+                zip_path = os.path.join(td, "QCM_Personnalises.zip")
+                with ZipFile(zip_path, "w") as z:
+                    pb = st.progress(0)
+                    for i, row in df.iterrows():
                         try:
-                            doc = generer_document(row, template_path)
-                            safe_prenom = re.sub(r'[^a-zA-Z0-9]', '_', str(row['Prénom']))
-                            safe_nom = re.sub(r'[^a-zA-Z0-9]', '_', str(row['Nom']))
-                            filename = f"QCM_{safe_prenom}_{safe_nom}.docx"
-                            doc.save(os.path.join(tmpdir, filename))
-                            zipf.write(os.path.join(tmpdir, filename), filename)
-                            progress_bar.progress((idx + 1) / len(df))
+                            doc = generer_document(row, tpl)
+                            # nom de fichier safe
+                            pren = re.sub(r"[^A-Za-z0-9]","_", str(row["Prénom"]))
+                            nomf = re.sub(r"[^A-Za-z0-9]","_", str(row["Nom"]))
+                            fn = f"QCM_{pren}_{nomf}.docx"
+                            outp = os.path.join(td, fn)
+                            doc.save(outp)
+                            z.write(outp, fn)
                         except Exception as e:
-                            st.error(f"Échec pour {row['Prénom']} {row['Nom']} : {str(e)}")
-                            continue
+                            st.error(f"Échec {row['Prénom']} {row['Nom']} : {e}")
+                        pb.progress((i+1)/len(df))
 
-                # Téléchargement
                 with open(zip_path, "rb") as f:
-                    st.success("✅ Génération terminée avec succès !")
+                    st.success("✅ Génération des QCM + résultats terminée !")
                     st.download_button(
-                        "📥 Télécharger l'archive ZIP",
-                        data=f,
-                        file_name="QCM_Personnalises.zip",
-                        mime="application/zip"
+                        "Télécharger l'archive ZIP",
+                        f, file_name="QCM_Résultats.zip", mime="application/zip"
                     )
 
-            except Exception as e:
-                st.error(f"ERREUR CRITIQUE : {str(e)}")
-                st.text(traceback.format_exc())
+        except Exception as e:
+            st.error("ERREUR FATALE : " + str(e))
+            st.text(traceback.format_exc())
