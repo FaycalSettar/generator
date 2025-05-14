@@ -12,7 +12,7 @@ st.set_page_config(page_title="Générateur de QCM", layout="centered")
 st.title("Générateur de QCM personnalisés")
 
 # =============================================
-# SECTION 1: UPLOAD DES FICHIERS (mise à jour)
+# SECTION 1: UPLOAD DES FICHIERS
 # =============================================
 with st.expander("Étape 1: Importation des fichiers", expanded=True):
     col1, col2, col3 = st.columns(3)
@@ -48,7 +48,8 @@ def detecter_questions(doc):
                 "index": i,
                 "texte": f"{match_question.group(1)} - {match_question.group(2)}?",
                 "reponses": [],
-                "correct_idx": None
+                "correct_idx": None,
+                "module": match_question.group(1).split('.')[0] if '.' in match_question.group(1) else '1'
             }
             questions.append(current_question)
        
@@ -73,7 +74,7 @@ def detecter_questions(doc):
     return [q for q in questions if q["correct_idx"] is not None and len(q["reponses"]) >= 2]
 
 # =============================================
-# SECTION 3: CONFIGURATION DES QUESTIONS (mise à jour)
+# SECTION 3: CONFIGURATION DES QUESTIONS
 # =============================================
 if word_file:
     if 'questions' not in st.session_state:
@@ -105,10 +106,6 @@ if word_file:
         q_id = q['index']
         q_num = q['texte'].split()[0]
        
-        # Extraction du numéro de module
-        module = q_num.split('.')[0] if '.' in q_num else '1'
-        q['module'] = module
-        
         col1, col2 = st.columns([1, 4])
         with col1:
             figer = st.checkbox(
@@ -132,7 +129,7 @@ if word_file:
                                           if r['lettre'].strip() == auto_rep), default_idx)
                 
                 bonne = st.selectbox(
-                    f"Bonne réponse pour {q_num} (Module {module})",
+                    f"Bonne réponse pour {q_num} (Module {q['module']})",
                     options=options,
                     index=default_idx,
                     key=f"bonne_{q_id}"
@@ -161,10 +158,12 @@ def generer_document(row, template_path):
             '{{date_evaluation}}': str(row['Date Évaluation'])
         }
 
-        # Première passe : remplacement des variables simples
+        # Première passe : remplacement des variables simples dans les paragraphes
         for para in doc.paragraphs:
             for key, value in replacements.items():
-                para.text = para.text.replace(key, value)
+                if key in para.text:
+                    for run in para.runs:
+                        run.text = run.text.replace(key, value)
 
         # Deuxième passe : traitement des questions
         for q in st.session_state.questions:
@@ -185,8 +184,9 @@ def generer_document(row, template_path):
             # Mise à jour du document avec checkbox
             for i, rep in enumerate(reponses):
                 para = doc.paragraphs[rep['index']]
-                checkbox = "☑" if i == 0 else "☐"
-                para.text = f"{rep['lettre']} - {rep['texte']} {checkbox}"
+                for run in para.runs:
+                    checkbox = "☑" if i == 0 else "☐"
+                    run.text = f"{rep['lettre']} - {rep['texte']} {checkbox}"
 
             # Incrémentation du compteur du module
             module = q.get('module', '1')
@@ -196,17 +196,32 @@ def generer_document(row, template_path):
         # Calcul du total général
         total = sum(compteurs_modules.values())
         
-        # Remplacement des variables de résultat
+        # Création des variables de résultat avec espaces exactes
         replacements.update({
             f'{{{{result_mod{i}}}}}': str(compteurs_modules[f'mod{i}']) 
             for i in range(1, 6)
         })
         replacements['{{result_mod_total}}'] = str(total)
 
-        # Troisième passe : remplacement des variables de résultats
+        # Troisième passe : remplacement des variables de résultats dans les paragraphes
         for para in doc.paragraphs:
             for key, value in replacements.items():
-                para.text = para.text.replace(key, value)
+                if key in para.text:
+                    for run in para.runs:
+                        if key in run.text:
+                            run.text = run.text.replace(key, str(value))
+
+        # Quatrième passe : remplacement des variables dans les tableaux
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for para in cell.paragraphs:
+                        for key, value in replacements.items():
+                            if key in para.text:
+                                for run in para.runs:
+                                    if key in run.text:
+                                        # Spécifique pour notre cas : remplacer " " par " " pour correspondre au modèle
+                                        run.text = run.text.replace(key, str(value)).replace(' ', ' ')
 
         return doc
     except Exception as e:
