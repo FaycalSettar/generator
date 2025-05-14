@@ -19,7 +19,7 @@ with st.expander("Étape 1: Importation des fichiers", expanded=True):
     word_file = st.file_uploader("Modèle Word", type="docx")
 
 # =============================================
-# SECTION 2: DÉTECTION DES QUESTIONS (CORRIGÉE)
+# SECTION 2: DÉTECTION DES QUESTIONS
 # =============================================
 def detecter_questions(doc):
     """Détection précise des questions avec regex améliorée"""
@@ -73,7 +73,15 @@ if word_file:
         st.session_state.reponses_correctes = {}
 
     st.markdown("### Configuration des questions")
-   
+    
+    # Sélecteur d'affichage des réponses
+    st.radio(
+        "Mode d'affichage des bonnes réponses:",
+        options=["Cases à cocher (☑/☐)", "Lettres (A/B/C/D)"],
+        index=0,
+        key="display_mode"
+    )
+
     for q in st.session_state.questions:
         q_id = q['index']
         q_num = q['texte'].split()[0]
@@ -103,10 +111,10 @@ if word_file:
                 st.session_state.reponses_correctes[q_id] = options.index(bonne)
 
 # =============================================
-# SECTION 4: FONCTIONS DE GÉNÉRATION (CORRIGÉE)
+# SECTION 4: FONCTIONS DE GÉNÉRATION
 # =============================================
 def generer_document(row, template_path):
-    """Génération avec gestion correcte des checkboxes"""
+    """Génération avec gestion des lettres et des checkboxes"""
     try:
         doc = Document(template_path)
         replacements = {
@@ -140,11 +148,21 @@ def generer_document(row, template_path):
                     reponse_correcte = reponses.pop(correct_idx)
                     reponses.insert(0, reponse_correcte)
 
+            # Réassigner les lettres dans l'ordre A,B,C,D
+            for idx, rep in enumerate(reponses):
+                rep['lettre'] = chr(65 + idx)  # 65 = ASCII pour 'A'
+
             # Mise à jour du document
             for i, rep in enumerate(reponses):
                 para = doc.paragraphs[rep['index']]
-                checkbox = "☑" if i == 0 else "☐"
-                para.text = f"{rep['lettre']} - {rep['texte']} {checkbox}"
+                
+                # Déterminer le suffixe selon le mode d'affichage
+                if st.session_state.display_mode == "Lettres (A/B/C/D)":
+                    suffix = rep['lettre'] if i == 0 else ''
+                else:
+                    suffix = "☑" if i == 0 else "☐"
+                
+                para.text = f"{rep['lettre']} - {rep['texte']} {suffix}"
 
         return doc
     except Exception as e:
