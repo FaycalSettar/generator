@@ -200,6 +200,25 @@ if 'questions' in st.session_state:
 # =============================================
 # 6) GÉNÉRATION DES DOCUMENTS
 # =============================================
+def replace_in_doc(doc, token, value):
+    """Remplace un token dans tout le document (paragraphes + tableaux)"""
+    # Dans les paragraphes
+    for p in doc.paragraphs:
+        if token in p.text:
+            for run in p.runs:
+                if token in run.text:
+                    run.text = run.text.replace(token, str(value))
+    
+    # Dans les tableaux
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    if token in p.text:
+                        for run in p.runs:
+                            if token in run.text:
+                                run.text = run.text.replace(token, str(value))
+                                
 def generer_document(row, tpl_path):
     """Génère un document personnalisé"""
     doc = Document(tpl_path)
