@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 from docx import Document
-from docx.shared import Pt
 import random
 import os
 import tempfile
@@ -16,21 +15,11 @@ st.title("Générateur de QCM personnalisés")
 # SECTION 1: UPLOAD DES FICHIERS
 # =============================================
 with st.expander("Étape 1: Importation des fichiers", expanded=True):
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        excel_file = st.file_uploader("Fichier Participants", type="xlsx", 
-                                   help="Colonnes requises: Prénom, Nom, Email, Référence Session, Date Évaluation")
-    
-    with col2:
-        word_file = st.file_uploader("Modèle Word", type="docx")
-    
-    with col3:
-        reponses_file = st.file_uploader("Fichier Réponses", type="xlsx",
-                                     help="Format attendu: colonnes 'Numéro de la question' et 'Réponse correcte'")
+    excel_file = st.file_uploader("Fichier Excel (colonnes: Prénom, Nom, Email, Référence Session, Date Évaluation)", type="xlsx")
+    word_file = st.file_uploader("Modèle Word", type="docx")
 
 # =============================================
-# SECTION 2: DÉTECTION DES QUESTIONS
+# SECTION 2: DÉTECTION DES QUESTIONS (CORRIGÉE)
 # =============================================
 def detecter_questions(doc):
     """Détection précise des questions avec regex améliorée"""
@@ -49,8 +38,7 @@ def detecter_questions(doc):
                 "index": i,
                 "texte": f"{match_question.group(1)} - {match_question.group(2)}?",
                 "reponses": [],
-                "correct_idx": None,
-                "module": match_question.group(1).split('.')[0] if '.' in match_question.group(1) else '1'
+                "correct_idx": None
             }
             questions.append(current_question)
        
@@ -86,23 +74,6 @@ if word_file:
 
     st.markdown("### Configuration des questions")
    
-    # Chargement des réponses correctes depuis le fichier uploadé
-    if reponses_file:
-        try:
-            df_reponses = pd.read_excel(reponses_file)
-            
-            # Vérifier que les colonnes attendues existent
-            if 'Numéro de la question' in df_reponses.columns and 'Réponse correcte' in df_reponses.columns:
-                st.session_state.reponses_correctes_auto = {
-                    row['Numéro de la question']: row['Réponse correcte'].strip()
-                    for _, row in df_reponses.iterrows()
-                    if pd.notna(row['Numéro de la question']) and pd.notna(row['Réponse correcte'])
-                }
-            else:
-                st.warning("⚠️ Le fichier de réponses doit contenir les colonnes 'Numéro de la question' et 'Réponse correcte'")
-        except Exception as e:
-            st.error(f"Erreur lecture réponses: {str(e)}")
-
     for q in st.session_state.questions:
         q_id = q['index']
         q_num = q['texte'].split()[0]
@@ -119,38 +90,25 @@ if word_file:
         with col2:
             if figer:
                 options = [f"{r['lettre']} - {r['texte']}" for r in q['reponses']]
-                
-                # Détection automatique depuis le fichier de réponses
-                default_idx = q['correct_idx'] if 'correct_idx' in q else 0
-                
-                if reponses_file and hasattr(st.session_state, 'reponses_correctes_auto'):
-                    if q_num in st.session_state.reponses_correctes_auto:
-                        auto_rep = st.session_state.reponses_correctes_auto[q_num]
-                        default_idx = next((i for i, r in enumerate(q['reponses']) 
-                                          if r['lettre'].strip() == auto_rep), default_idx)
-                
+                default_idx = q['correct_idx']
+               
                 bonne = st.selectbox(
-                    f"Bonne réponse pour {q_num} (Module {q['module']})",
+                    f"Bonne réponse pour {q_num}",
                     options=options,
                     index=default_idx,
                     key=f"bonne_{q_id}"
                 )
-                
+               
                 st.session_state.figees[q_id] = True
                 st.session_state.reponses_correctes[q_id] = options.index(bonne)
 
 # =============================================
-# SECTION 4: FONCTIONS DE GÉNÉRATION
+# SECTION 4: FONCTIONS DE GÉNÉRATION (CORRIGÉE)
 # =============================================
 def generer_document(row, template_path):
-    """Génération avec gestion des résultats par module"""
+    """Génération avec gestion correcte des checkboxes"""
     try:
         doc = Document(template_path)
-        
-        # Initialisation des compteurs par module
-        compteurs_modules = {f'mod{i}': 0 for i in range(1, 6)}
-        
-        # Remplacement des variables simples
         replacements = {
             '{{prenom}}': str(row['Prénom']),
             '{{nom}}': str(row['Nom']),
@@ -159,80 +117,34 @@ def generer_document(row, template_path):
             '{{date_evaluation}}': str(row['Date Évaluation'])
         }
 
-        # Première passe : remplacement des variables simples
+        # Remplacement des variables
         for para in doc.paragraphs:
             for key, value in replacements.items():
-                if key in para.text:
-                    for run in para.runs:
-                        run.text = run.text.replace(key, value)
+                para.text = para.text.replace(key, value)
 
-        # Deuxième passe : traitement des questions
+        # Traitement des questions
         for q in st.session_state.questions:
             reponses = q['reponses'].copy()
             is_figee = st.session_state.figees.get(q['index'], False)
-            
+           
             if is_figee:
-                bonne_idx = st.session_state.reponses_correctes.get(q['index'], q.get('correct_idx', 0))
+                # Réponses figées
+                bonne_idx = st.session_state.reponses_correctes.get(q['index'], q['correct_idx'])
                 reponse_correcte = reponses.pop(bonne_idx)
                 reponses.insert(0, reponse_correcte)
             else:
+                # Mélanger en conservant la bonne réponse
                 random.shuffle(reponses)
                 correct_idx = next((i for i, r in enumerate(reponses) if r['correct']), None)
                 if correct_idx is not None:
                     reponse_correcte = reponses.pop(correct_idx)
                     reponses.insert(0, reponse_correcte)
 
-            # Mise à jour du document avec checkbox
+            # Mise à jour du document
             for i, rep in enumerate(reponses):
                 para = doc.paragraphs[rep['index']]
-                for run in para.runs:
-                    checkbox = "☑" if i == 0 else "☐"
-                    run.text = f"{rep['lettre']} - {rep['texte']} {checkbox}"
-
-            # Incrémentation du compteur du module
-            module = q.get('module', '1')
-            if module.isdigit() and 1 <= int(module) <= 5:
-                compteurs_modules[f'mod{module}'] += 1
-
-        # Calcul du total général
-        total = sum(compteurs_modules.values())
-        
-        # Création des variables de résultat avec espaces exactes
-        replacements.update({
-            f'{{{{result_mod{i}}}}}': str(compteurs_modules[f'mod{i}']) 
-            for i in range(1, 6)
-        })
-        replacements['{{result_mod_total}}}'] = str(total)
-
-        # TROISIÈME PASSE : remplacement DANS LES TABLEAUX avec préservation du format
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    for para in cell.paragraphs:
-                        original_text = para.text
-                        
-                        # Vérifier si la cellule contient une variable à remplacer
-                        for key, value in replacements.items():
-                            if key in original_text:
-                                # Créer un nouveau paragraphe avec le texte mis à jour
-                                new_text = original_text.replace(key, f"{value} ")
-                                
-                                # Effacer le contenu existant
-                                for run in para.runs:
-                                    run.text = ""
-                                
-                                # Ajouter le nouveau texte avec le même format
-                                if para.runs:
-                                    para.runs[0].text = new_text
-                                    para.runs[0].bold = para.runs[0].bold
-                                    para.runs[0].italic = para.runs[0].italic
-                                    para.runs[0].underline = para.runs[0].underline
-                                    para.runs[0].font.color.rgb = para.runs[0].font.color.rgb
-                                else:
-                                    run = para.add_run(new_text)
-                                    run.bold = False
-                                    run.italic = False
-                                    run.underline = False
+                checkbox = "☑" if i == 0 else "☐"
+                para.text = f"{rep['lettre']} - {rep['texte']} {checkbox}"
 
         return doc
     except Exception as e:
