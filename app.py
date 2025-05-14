@@ -67,7 +67,7 @@ def detecter_questions(doc, corrections):
     return [q for q in questions if q["reponses"]]
 
 # =============================================
-# SECTION 3: CONFIGURATION DES QUESTIONS (RÉTABLIE)
+# SECTION 3: CONFIGURATION DES QUESTIONS
 # =============================================
 if word_file and correction_file:
     if 'questions' not in st.session_state:
@@ -79,7 +79,6 @@ if word_file and correction_file:
 
     st.markdown("### Configuration des questions")
     
-    # Interface de configuration réactivée
     for q in st.session_state.questions:
         q_id = q['index']
         q_num = q['numero']
@@ -108,73 +107,73 @@ if word_file and correction_file:
                 st.session_state.figees[q_id] = True
                 st.session_state.reponses_correctes[q_id] = options.index(bonne)
 
-    # =============================================
-    # SECTION 4: FONCTIONS DE GÉNÉRATION
-    # =============================================
-    def generer_document(row, template_path):
-        try:
-            doc = Document(template_path)
-            replacements = {
-                '{{prenom}}': str(row['Prénom']),
-                '{{nom}}': str(row['Nom']),
-                '{{email}}': str(row['Email']),
-                '{{ref_session}}': str(row['Référence Session']),
-                '{{date_evaluation}}': str(row['Date Évaluation'])
-            }
+# =============================================
+# SECTION 4: FONCTIONS DE GÉNÉRATION
+# =============================================
+def generer_document(row, template_path):
+    try:
+        doc = Document(template_path)
+        replacements = {
+            '{{prenom}}': str(row['Prénom']),
+            '{{nom}}': str(row['Nom']),
+            '{{email}}': str(row['Email']),
+            '{{ref_session}}': str(row['Référence Session']),
+            '{{date_evaluation}}': str(row['Date Évaluation'])
+        }
+        
+        # Calcul des résultats
+        modules = defaultdict(int)
+        total_correct = 0
+        
+        for q in st.session_state.questions:
+            module = q['numero'].split('.')[0]
+            if st.session_state.figees.get(q['index'], False):
+                if st.session_state.reponses_correctes.get(q['index'], 0) == 0:
+                    modules[module] += 1
+                    total_correct += 1
+            else:
+                if any(r['correct'] for r in q['reponses']):
+                    modules[module] += 1
+                    total_correct += 1
+        
+        # Ajout des résultats
+        for mod in range(1, 6):
+            replacements[f'{{result_mod{mod}}}'] = str(modules.get(str(mod), 0))
+        replacements['{{result_mod_total}}'] = str(total_correct)
+        
+        # Remplacement des variables
+        for para in doc.paragraphs:
+            for key, value in replacements.items():
+                if key in para.text:
+                    para.text = para.text.replace(key, value)
+        
+        # Traitement des questions
+        for q in st.session_state.questions:
+            reponses = q['reponses'].copy()
+            is_figee = st.session_state.figees.get(q['index'], False)
             
-            # Calcul des résultats
-            modules = defaultdict(int)
-            total_correct = 0
-            
-            for q in st.session_state.questions:
-                module = q['numero'].split('.')[0]
-                if st.session_state.figees.get(q['index'], False):
-                    if st.session_state.reponses_correctes.get(q['index'], 0) == 0:
-                        modules[module] += 1
-                        total_correct += 1
-                else:
-                    if any(r['correct'] for r in q['reponses']):
-                        modules[module] += 1
-                        total_correct += 1
-            
-            # Ajout des résultats
-            for mod in range(1, 6):
-                replacements[f'{{result_mod{mod}}}'] = str(modules.get(str(mod), 0))
-            replacements['{{result_mod_total}}'] = str(total_correct)
-            
-            # Remplacement des variables
-            for para in doc.paragraphs:
-                for key, value in replacements.items():
-                    if key in para.text:
-                        para.text = para.text.replace(key, value)
-            
-            # Traitement des questions
-            for q in st.session_state.questions:
-                reponses = q['reponses'].copy()
-                is_figee = st.session_state.figees.get(q['index'], False)
-                
-                if is_figee:
-                    # Utiliser la réponse figée
-                    bonne_idx = st.session_state.reponses_correctes.get(q['index'], 0)
-                    reponse_correcte = reponses.pop(bonne_idx)
+            if is_figee:
+                # Utiliser la réponse figée
+                bonne_idx = st.session_state.reponses_correctes.get(q['index'], 0)
+                reponse_correcte = reponses.pop(bonne_idx)
+                reponses.insert(0, reponse_correcte)
+            else:
+                random.shuffle(reponses)
+                correct_idx = next((i for i, r in enumerate(reponses) if r['correct']), None)
+                if correct_idx is not None:
+                    reponse_correcte = reponses.pop(correct_idx)
                     reponses.insert(0, reponse_correcte)
-                else:
-                    random.shuffle(reponses)
-                    correct_idx = next((i for i, r in enumerate(reponses) if r['correct']), None)
-                    if correct_idx is not None:
-                        reponse_correcte = reponses.pop(correct_idx)
-                        reponses.insert(0, reponse_correcte)
-                
-                # Mise à jour des réponses
-                for i, rep in enumerate(reponses):
-                    para = doc.paragraphs[rep['index']]
-                    checkbox = "☑" if i == 0 else "☐"
-                    para.text = f"{rep['lettre']} - {rep['texte']} {checkbox}"
             
-            return doc
-        except Exception as e:
-            st.error(f"Erreur de génération : {str(e)}")
-            raise
+            # Mise à jour des réponses
+            for i, rep in enumerate(reponses):
+                para = doc.paragraphs[rep['index']]
+                checkbox = "☑" if i == 0 else "☐"
+                para.text = f"{rep['lettre']} - {rep['texte']} {checkbox}"
+        
+        return doc
+    except Exception as e:
+        st.error(f"Erreur de génération : {str(e)}")
+        raise
 
 # =============================================
 # SECTION 5: GÉNÉRATION PRINCIPALE
