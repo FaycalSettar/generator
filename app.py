@@ -24,13 +24,11 @@ with st.expander("Étape 1: Importation des fichiers", expanded=True):
 # SECTION 2: DÉTECTION DES QUESTIONS ET CORRECTIONS
 # =============================================
 def charger_corrections(fichier):
-    """Charge les corrections depuis le fichier Excel"""
     df = pd.read_excel(fichier, header=None, usecols="B,C", skiprows=1)
     df.columns = ['Question', 'Reponse']
     return {row['Question']: row['Reponse'] for _, row in df.iterrows()}
 
 def detecter_questions(doc, corrections):
-    """Détection des questions avec vérification des corrections"""
     questions = []
     current_question = None
     pattern = re.compile(r'^(\d+\.\d+)\s*[-–—)\s.]*\s*(.+?)\?$')
@@ -39,7 +37,6 @@ def detecter_questions(doc, corrections):
     for i, para in enumerate(doc.paragraphs):
         texte = para.text.strip()
         
-        # Détection des questions
         match_question = pattern.match(texte)
         if match_question:
             q_num = match_question.group(1)
@@ -49,28 +46,28 @@ def detecter_questions(doc, corrections):
                 "index": i,
                 "texte": f"{q_num} - {match_question.group(2)}?",
                 "reponses": [],
-                "correct": correct
+                "correct_lettre": correct
             }
             questions.append(current_question)
         
-        # Détection des réponses
         elif current_question:
             match_reponse = reponse_pattern.match(texte)
             if match_reponse:
                 lettre = match_reponse.group(1)
                 texte_rep = match_reponse.group(2).strip()
+                is_correct = lettre == current_question["correct_lettre"]
                 
                 current_question["reponses"].append({
                     "index": i,
                     "lettre": lettre,
                     "texte": texte_rep,
-                    "est_correcte": lettre == current_question["correct"]
+                    "correct": is_correct
                 })
     
     return [q for q in questions if q["reponses"]]
 
 # =============================================
-# SECTION 3: CONFIGURATION DES QUESTIONS
+# SECTION 3: CONFIGURATION DES QUESTIONS (RÉTABLIE)
 # =============================================
 if word_file and correction_file:
     if 'questions' not in st.session_state:
@@ -78,20 +75,43 @@ if word_file and correction_file:
         doc = Document(word_file)
         st.session_state.questions = detecter_questions(doc, corrections)
         st.session_state.figees = {}
+        st.session_state.reponses_correctes = {}
 
     st.markdown("### Configuration des questions")
     
-    # Calcul des résultats par module
-    modules = defaultdict(int)
+    # Interface de configuration réactivée
     for q in st.session_state.questions:
-        module = q['numero'].split('.')[0]
-        modules[module] += 1
+        q_id = q['index']
+        q_num = q['numero']
+        
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            figer = st.checkbox(
+                f"Q{q_num}",
+                value=st.session_state.figees.get(q_id, False),
+                key=f"figer_{q_id}",
+                help=q['texte']
+            )
+        
+        with col2:
+            if figer:
+                options = [f"{r['lettre']} - {r['texte']}" for r in q['reponses']]
+                default_idx = next((i for i, r in enumerate(q['reponses']) if r['correct'] else 0, 0)
+                
+                bonne = st.selectbox(
+                    f"Bonne réponse pour {q_num}",
+                    options=options,
+                    index=default_idx,
+                    key=f"bonne_{q_id}"
+                )
+                
+                st.session_state.figees[q_id] = True
+                st.session_state.reponses_correctes[q_id] = options.index(bonne)
 
     # =============================================
     # SECTION 4: FONCTIONS DE GÉNÉRATION
     # =============================================
     def generer_document(row, template_path):
-        """Génération avec calcul des résultats"""
         try:
             doc = Document(template_path)
             replacements = {
@@ -103,15 +123,24 @@ if word_file and correction_file:
             }
             
             # Calcul des résultats
-            resultats = defaultdict(int)
+            modules = defaultdict(int)
+            total_correct = 0
+            
             for q in st.session_state.questions:
                 module = q['numero'].split('.')[0]
-                resultats[f"result_mod{module}"] += 1
+                if st.session_state.figees.get(q['index'], False):
+                    if st.session_state.reponses_correctes.get(q['index'], 0) == 0:
+                        modules[module] += 1
+                        total_correct += 1
+                else:
+                    if any(r['correct'] for r in q['reponses']):
+                        modules[module] += 1
+                        total_correct += 1
             
-            # Ajout des résultats aux replacements
+            # Ajout des résultats
             for mod in range(1, 6):
-                replacements[f'{{result_mod{mod}}}'] = str(resultats.get(f'result_mod{mod}', 0))
-            replacements['{{result_mod_total}}'] = str(sum(modules.values()))
+                replacements[f'{{result_mod{mod}}}'] = str(modules.get(str(mod), 0))
+            replacements['{{result_mod_total}}'] = str(total_correct)
             
             # Remplacement des variables
             for para in doc.paragraphs:
@@ -125,13 +154,13 @@ if word_file and correction_file:
                 is_figee = st.session_state.figees.get(q['index'], False)
                 
                 if is_figee:
-                    # Réponses figées
-                    correct_idx = next((i for i, r in enumerate(reponses) if r['est_correcte']), 0)
-                    reponse_correcte = reponses.pop(correct_idx)
+                    # Utiliser la réponse figée
+                    bonne_idx = st.session_state.reponses_correctes.get(q['index'], 0)
+                    reponse_correcte = reponses.pop(bonne_idx)
                     reponses.insert(0, reponse_correcte)
                 else:
                     random.shuffle(reponses)
-                    correct_idx = next((i for i, r in enumerate(reponses) if r['est_correcte']), None)
+                    correct_idx = next((i for i, r in enumerate(reponses) if r['correct']), None)
                     if correct_idx is not None:
                         reponse_correcte = reponses.pop(correct_idx)
                         reponses.insert(0, reponse_correcte)
