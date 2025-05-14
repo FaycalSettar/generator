@@ -17,9 +17,10 @@ st.title("Générateur de QCM personnalisés")
 with st.expander("Étape 1: Importation des fichiers", expanded=True):
     excel_file = st.file_uploader("Fichier Excel (colonnes: Prénom, Nom, Email, Référence Session, Date Évaluation)", type="xlsx")
     word_file = st.file_uploader("Modèle Word", type="docx")
+    reponses_file = st.file_uploader("Fichier des réponses correctes (Excel)", type="xlsx")
 
 # =============================================
-# SECTION 2: DÉTECTION DES QUESTIONS (CORRIGÉE)
+# SECTION 2: DÉTECTION DES QUESTIONS
 # =============================================
 def detecter_questions(doc):
     """Détection précise des questions avec regex améliorée"""
@@ -78,6 +79,10 @@ if word_file:
         q_id = q['index']
         q_num = q['texte'].split()[0]
        
+        # Extraction du numéro de module
+        module = q_num.split('.')[0] if '.' in q_num else '1'
+        q['module'] = module
+        
         col1, col2 = st.columns([1, 4])
         with col1:
             figer = st.checkbox(
@@ -90,25 +95,52 @@ if word_file:
         with col2:
             if figer:
                 options = [f"{r['lettre']} - {r['texte']}" for r in q['reponses']]
-                default_idx = q['correct_idx']
-               
+                
+                # Détection automatique depuis le fichier de réponses
+                default_idx = q['correct_idx'] if 'correct_idx' in q else 0
+                
+                if reponses_file:
+                    try:
+                        df_reponses = pd.read_excel(reponses_file)
+                        question_text = q['texte'].replace('?', '').strip()
+                        
+                        # Nettoyage pour correspondance exacte
+                        question_clean = re.sub(r'\s+', ' ', question_text).strip()
+                        
+                        # Recherche dans les réponses
+                        matched_row = df_reponses[df_reponses['Question'].apply(
+                            lambda x: re.sub(r'\s+', ' ', str(x)).strip() == question_clean
+                        )]
+                        
+                        if not matched_row.empty:
+                            auto_rep = matched_row.iloc[0]['Réponse'].strip()
+                            default_idx = next((i for i, r in enumerate(q['reponses']) 
+                                              if r['lettre'].strip() == auto_rep), default_idx)
+                    except Exception as e:
+                        st.warning(f"Erreur lecture réponses: {str(e)}")
+                
                 bonne = st.selectbox(
-                    f"Bonne réponse pour {q_num}",
+                    f"Bonne réponse pour {q_num} (Module {module})",
                     options=options,
                     index=default_idx,
                     key=f"bonne_{q_id}"
                 )
-               
+                
                 st.session_state.figees[q_id] = True
                 st.session_state.reponses_correctes[q_id] = options.index(bonne)
 
 # =============================================
-# SECTION 4: FONCTIONS DE GÉNÉRATION (CORRIGÉE)
+# SECTION 4: FONCTIONS DE GÉNÉRATION
 # =============================================
 def generer_document(row, template_path):
-    """Génération avec gestion correcte des checkboxes"""
+    """Génération avec gestion des résultats par module"""
     try:
         doc = Document(template_path)
+        
+        # Initialisation des compteurs par module
+        compteurs_modules = {f'mod{i}': 0 for i in range(1, 6)}
+        
+        # Remplacement des variables simples
         replacements = {
             '{{prenom}}': str(row['Prénom']),
             '{{nom}}': str(row['Nom']),
@@ -117,34 +149,52 @@ def generer_document(row, template_path):
             '{{date_evaluation}}': str(row['Date Évaluation'])
         }
 
-        # Remplacement des variables
+        # Première passe : remplacement des variables simples
         for para in doc.paragraphs:
             for key, value in replacements.items():
                 para.text = para.text.replace(key, value)
 
-        # Traitement des questions
+        # Deuxième passe : traitement des questions
         for q in st.session_state.questions:
             reponses = q['reponses'].copy()
             is_figee = st.session_state.figees.get(q['index'], False)
-           
+            
             if is_figee:
-                # Réponses figées
-                bonne_idx = st.session_state.reponses_correctes.get(q['index'], q['correct_idx'])
+                bonne_idx = st.session_state.reponses_correctes.get(q['index'], q.get('correct_idx', 0))
                 reponse_correcte = reponses.pop(bonne_idx)
                 reponses.insert(0, reponse_correcte)
             else:
-                # Mélanger en conservant la bonne réponse
                 random.shuffle(reponses)
                 correct_idx = next((i for i, r in enumerate(reponses) if r['correct']), None)
                 if correct_idx is not None:
                     reponse_correcte = reponses.pop(correct_idx)
                     reponses.insert(0, reponse_correcte)
 
-            # Mise à jour du document
+            # Mise à jour du document avec checkbox
             for i, rep in enumerate(reponses):
                 para = doc.paragraphs[rep['index']]
                 checkbox = "☑" if i == 0 else "☐"
                 para.text = f"{rep['lettre']} - {rep['texte']} {checkbox}"
+
+            # Incrémentation du compteur du module
+            module = q.get('module', '1')
+            if module.isdigit() and 1 <= int(module) <= 5:
+                compteurs_modules[f'mod{module}'] += 1
+
+        # Calcul du total général
+        total = sum(compteurs_modules.values())
+        
+        # Remplacement des variables de résultat
+        replacements.update({
+            f'{{{{result_mod{i}}}}}': str(compteurs_modules[f'mod{i}']) 
+            for i in range(1, 6)
+        })
+        replacements['{{result_mod_total}}'] = str(total)
+
+        # Troisième passe : remplacement des variables de résultats
+        for para in doc.paragraphs:
+            for key, value in replacements.items():
+                para.text = para.text.replace(key, value)
 
         return doc
     except Exception as e:
