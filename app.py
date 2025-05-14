@@ -12,12 +12,21 @@ st.set_page_config(page_title="Générateur de QCM", layout="centered")
 st.title("Générateur de QCM personnalisés")
 
 # =============================================
-# SECTION 1: UPLOAD DES FICHIERS
+# SECTION 1: UPLOAD DES FICHIERS (mise à jour)
 # =============================================
 with st.expander("Étape 1: Importation des fichiers", expanded=True):
-    excel_file = st.file_uploader("Fichier Excel (colonnes: Prénom, Nom, Email, Référence Session, Date Évaluation)", type="xlsx")
-    word_file = st.file_uploader("Modèle Word", type="docx")
-    reponses_file = st.file_uploader("Fichier des réponses correctes (Excel)", type="xlsx")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        excel_file = st.file_uploader("Fichier Participants", type="xlsx", 
+                                   help="Colonnes requises: Prénom, Nom, Email, Référence Session, Date Évaluation")
+    
+    with col2:
+        word_file = st.file_uploader("Modèle Word", type="docx")
+    
+    with col3:
+        reponses_file = st.file_uploader("Fichier Réponses", type="xlsx",
+                                     help="Format attendu: colonnes 'Numéro de la question' et 'Réponse correcte'")
 
 # =============================================
 # SECTION 2: DÉTECTION DES QUESTIONS
@@ -64,7 +73,7 @@ def detecter_questions(doc):
     return [q for q in questions if q["correct_idx"] is not None and len(q["reponses"]) >= 2]
 
 # =============================================
-# SECTION 3: CONFIGURATION DES QUESTIONS
+# SECTION 3: CONFIGURATION DES QUESTIONS (mise à jour)
 # =============================================
 if word_file:
     if 'questions' not in st.session_state:
@@ -75,6 +84,23 @@ if word_file:
 
     st.markdown("### Configuration des questions")
    
+    # Chargement des réponses correctes depuis le fichier uploadé
+    if reponses_file:
+        try:
+            df_reponses = pd.read_excel(reponses_file)
+            
+            # Vérifier que les colonnes attendues existent
+            if 'Numéro de la question' in df_reponses.columns and 'Réponse correcte' in df_reponses.columns:
+                st.session_state.reponses_correctes_auto = {
+                    row['Numéro de la question']: row['Réponse correcte'].strip()
+                    for _, row in df_reponses.iterrows()
+                    if pd.notna(row['Numéro de la question']) and pd.notna(row['Réponse correcte'])
+                }
+            else:
+                st.warning("⚠️ Le fichier de réponses doit contenir les colonnes 'Numéro de la question' et 'Réponse correcte'")
+        except Exception as e:
+            st.error(f"Erreur lecture réponses: {str(e)}")
+
     for q in st.session_state.questions:
         q_id = q['index']
         q_num = q['texte'].split()[0]
@@ -99,25 +125,11 @@ if word_file:
                 # Détection automatique depuis le fichier de réponses
                 default_idx = q['correct_idx'] if 'correct_idx' in q else 0
                 
-                if reponses_file:
-                    try:
-                        df_reponses = pd.read_excel(reponses_file)
-                        question_text = q['texte'].replace('?', '').strip()
-                        
-                        # Nettoyage pour correspondance exacte
-                        question_clean = re.sub(r'\s+', ' ', question_text).strip()
-                        
-                        # Recherche dans les réponses
-                        matched_row = df_reponses[df_reponses['Question'].apply(
-                            lambda x: re.sub(r'\s+', ' ', str(x)).strip() == question_clean
-                        )]
-                        
-                        if not matched_row.empty:
-                            auto_rep = matched_row.iloc[0]['Réponse'].strip()
-                            default_idx = next((i for i, r in enumerate(q['reponses']) 
-                                              if r['lettre'].strip() == auto_rep), default_idx)
-                    except Exception as e:
-                        st.warning(f"Erreur lecture réponses: {str(e)}")
+                if reponses_file and hasattr(st.session_state, 'reponses_correctes_auto'):
+                    if q_num in st.session_state.reponses_correctes_auto:
+                        auto_rep = st.session_state.reponses_correctes_auto[q_num]
+                        default_idx = next((i for i, r in enumerate(q['reponses']) 
+                                          if r['lettre'].strip() == auto_rep), default_idx)
                 
                 bonne = st.selectbox(
                     f"Bonne réponse pour {q_num} (Module {module})",
