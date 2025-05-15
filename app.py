@@ -16,6 +16,7 @@ def remplacer_placeholders(paragraph, replacements):
     if not paragraph.text:
         return
     
+    # Gestion des variations possibles des clés
     original_text = paragraph.text
     
     for key, value in replacements.items():
@@ -27,10 +28,15 @@ def remplacer_placeholders(paragraph, replacements):
             # Nettoyage complet du texte
             for run in paragraph.runs:
                 for k, v in replacements.items():
-                    if k in run.text or k.replace(" ", "") in run.text or k.replace(" ", " ") in run.text:
+                    # Remplacement exact
+                    if k in run.text:
                         run.text = run.text.replace(k, v)
-                        run.text = run.text.replace(k.replace(" ", ""), v)
+                    # Remplacement avec espaces insécables
+                    if k.replace(" ", " ") in run.text:
                         run.text = run.text.replace(k.replace(" ", " "), v)
+                    # Remplacement sans espaces
+                    if k.replace(" ", "") in run.text:
+                        run.text = run.text.replace(k.replace(" ", ""), v)
 
 def detecter_questions(doc):
     """Détection précise des questions avec regex améliorée"""
@@ -243,7 +249,7 @@ def generer_document(row, template_path):
             '{{result_mod4}}': str(scores["Module 4"]),
             '{{result_mod5}}': str(scores["Module 5"]),
             '{{result_mod_total}}': str(total_score),
-            'Résultat de l’évaluation : Non acquis': f'Résultat de l’évaluation : {resultat_final}'
+            '{{result_evaluation}}': resultat_final
         }
 
         # Remplacement dans tous les paragraphes
