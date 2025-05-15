@@ -16,6 +16,8 @@ st.title("Générateur de QCM personnalisés")
 # =============================================
 def remplacer_placeholders(paragraph, replacements):
     """Remplace les placeholders en préservant la mise en forme"""
+    if not paragraph.text: return
+        
     for key, value in replacements.items():
         if key in paragraph.text:
             for run in paragraph.runs:
@@ -26,7 +28,8 @@ def detecter_questions(doc):
     """Détection précise des questions avec regex améliorée"""
     questions = []
     current_question = None
-    pattern = re.compile(r'^(\d+\.\d+)\s*[-–—)\s.]*\s*(.+?)\?$')
+    # Support des formats 1.1, 1 . 1, 1.1.1, etc.
+    pattern = re.compile(r'^(\d+[\. ]*\d*)\s*[-–—)\s.]*\s*(.+?)\?$')
     reponse_pattern = re.compile(r'^([A-D])[\s\-–—).]+\s*(.*?)({{checkbox}})?\s*$')
    
     for i, para in enumerate(doc.paragraphs):
@@ -35,9 +38,12 @@ def detecter_questions(doc):
         # Détection des questions
         match_question = pattern.match(texte)
         if match_question:
+            # Nettoyage du numéro de question (supprime les espaces)
+            question_num = re.sub(r'\s+', '.', match_question.group(1)).strip()
+            
             current_question = {
                 "index": i,
-                "texte": f"{match_question.group(1)} - {match_question.group(2)}?",
+                "texte": f"{question_num} - {match_question.group(2)}?",
                 "reponses": [],
                 "correct_idx": None,
                 "original_text": texte
@@ -193,13 +199,28 @@ def generer_document(row, template_path):
             question_num = q['texte'].split(" ")[0]  # Extrait le numéro de question (ex: "1.1")
             module = f"Module {question_num.split('.')[0]}"  # Extrait le module (ex: "Module 1")
             
-            if question_num in correct_answers:
-                correct_answer = correct_answers[question_num].upper()
+            # Nettoyage du numéro de question (supprime les espaces)
+            question_num_clean = re.sub(r'\s+', '.', str(question_num).strip())
+            
+            if question_num_clean in correct_answers:
+                correct_answer = correct_answers[question_num_clean].upper()
                 generated_answer = reponses[0]['lettre'].upper()
                 
                 if generated_answer == correct_answer:
                     scores[module] += 1
                     scores['Total'] = scores.get('Total', 0) + 1
+
+        # Calcul du résultat final
+        total_questions = 30
+        total_score = scores.get('Total', 0)
+        pourcentage = (total_score / total_questions) * 100 if total_questions > 0 else 0
+        
+        if pourcentage >= 75:
+            resultat_final = "Acquis"
+        elif pourcentage >= 50:
+            resultat_final = "En cours d’acquisition"
+        else:
+            resultat_final = "Non acquis"
 
         # Insertion des résultats dans le document
         score_replacements = {
@@ -208,7 +229,8 @@ def generer_document(row, template_path):
             '{{result_mod3}}': str(scores["Module 3"]),
             '{{result_mod4}}': str(scores["Module 4"]),
             '{{result_mod5}}': str(scores["Module 5"]),
-            '{{result_mod_total}}': str(scores.get('Total', 0))
+            '{{result_mod_total}}': str(scores.get('Total', 0)),
+            'Résultat de l’évaluation :': f'Résultat de l’évaluation : {resultat_final}'
         }
 
         for para in doc.paragraphs:
