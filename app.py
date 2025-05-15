@@ -15,20 +15,22 @@ def remplacer_placeholders(paragraph, replacements):
     """Remplace les placeholders en préservant la mise en forme"""
     if not paragraph.text:
         return
-        
+    
+    original_text = paragraph.text
+    
     for key, value in replacements.items():
         # Nettoyage des variations possibles des clés
-        cleaned_key = key.replace(" ", "")
-        cleaned_text = paragraph.text.replace(" ", "")
+        cleaned_key = key.replace(" ", "").replace(" ", "")
+        cleaned_text = original_text.replace(" ", "").replace(" ", "")
         
         if cleaned_key in cleaned_text:
-            # Reconstruction du texte avec remplacement
-            new_text = paragraph.text
+            # Nettoyage complet du texte
             for run in paragraph.runs:
                 for k, v in replacements.items():
-                    if k in run.text or k.replace(" ", "") in run.text:
-                        run.text = run.text.replace(k, v).replace(k.replace(" ", ""), v)
-            return
+                    if k in run.text or k.replace(" ", "") in run.text or k.replace(" ", " ") in run.text:
+                        run.text = run.text.replace(k, v)
+                        run.text = run.text.replace(k.replace(" ", ""), v)
+                        run.text = run.text.replace(k.replace(" ", " "), v)
 
 def detecter_questions(doc):
     """Détection précise des questions avec regex améliorée"""
@@ -125,8 +127,7 @@ for q in st.session_state.get('questions', []):
         figer = st.checkbox(
             f"Q{q_num}",
             value=st.session_state.figees.get(q_id, False),
-            key=f"figer_{q_id}_{word_file.name[:5]}" if word_file else f"figer_{q_id}",
-            help=q['texte']
+            key=f"figer_{q_id}_{word_file.name[:5]}" if word_file else f"figer_{q_id}"
         )
    
     with col2:
@@ -144,9 +145,25 @@ for q in st.session_state.get('questions', []):
             st.session_state.figees[q_id] = True
             st.session_state.reponses_correctes[q_id] = options.index(bonne)
 
-# Fonction de génération avec calcul des scores
+# Calcul du résultat final
+def calculer_resultat_final(total_score):
+    """Calcule le résultat final en fonction du score total"""
+    total_questions = 30
+    if total_questions == 0:
+        return "Non acquis"  # Valeur par défaut si pas de questions
+    
+    pourcentage = (total_score / total_questions) * 100
+    
+    if pourcentage >= 75:
+        return "Acquis"
+    elif pourcentage >= 50:
+        return "En cours d’acquisition"
+    else:
+        return "Non acquis"
+
+# Génération des documents
 def generer_document(row, template_path):
-    """Génération avec calcul des scores par module"""
+    """Génération avec calcul des scores par module et résultat final"""
     try:
         doc = Document(template_path)
         replacements = {
@@ -161,11 +178,11 @@ def generer_document(row, template_path):
         scores = {f"Module {i}": 0 for i in range(1, 6)}
         correct_answers = st.session_state.get('correct_answers', {})
         
-        # Remplacement des variables (paragraphes)
+        # Remplacement des variables dans les paragraphes
         for para in doc.paragraphs:
             remplacer_placeholders(para, replacements)
 
-        # Remplacement des variables (tableaux)
+        # Remplacement des variables dans les tableaux
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
@@ -214,6 +231,10 @@ def generer_document(row, template_path):
                     scores[module] += 1
                     scores['Total'] = scores.get('Total', 0) + 1
 
+        # Calcul du résultat final
+        total_score = scores.get('Total', 0)
+        resultat_final = calculer_resultat_final(total_score)
+        
         # Préparation des remplacements de scores
         score_replacements = {
             '{{result_mod1}}': str(scores["Module 1"]),
@@ -221,7 +242,8 @@ def generer_document(row, template_path):
             '{{result_mod3}}': str(scores["Module 3"]),
             '{{result_mod4}}': str(scores["Module 4"]),
             '{{result_mod5}}': str(scores["Module 5"]),
-            '{{result_mod_total}}': str(scores.get('Total', 0))
+            '{{result_mod_total}}': str(total_score),
+            'Résultat de l’évaluation : Non acquis': f'Résultat de l’évaluation : {resultat_final}'
         }
 
         # Remplacement dans tous les paragraphes
@@ -291,3 +313,11 @@ if excel_file and word_file and st.session_state.get('questions') and st.session
 
             except Exception as e:
                 st.error(f"ERREUR CRITIQUE : {str(e)}")
+
+# Affichage des consignes
+st.markdown("### Résultat final")
+st.info("""
+- 75% ou plus de bonnes réponses : Acquis  
+- Entre 50% et 75% de bonnes réponses : En cours d’acquisition  
+- Inférieur à 50% de bonnes réponses : Non acquis
+""")
