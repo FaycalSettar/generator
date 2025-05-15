@@ -6,29 +6,34 @@ import os
 import tempfile
 from zipfile import ZipFile
 import re
-import traceback
 
 st.set_page_config(page_title="Générateur de QCM", layout="centered")
 st.title("Générateur de QCM personnalisés")
 
-# =============================================
-# FONCTIONS UTILITAIRES
-# =============================================
+# Fonctions utilitaires
 def remplacer_placeholders(paragraph, replacements):
     """Remplace les placeholders en préservant la mise en forme"""
-    if not paragraph.text: return
+    if not paragraph.text:
+        return
         
     for key, value in replacements.items():
-        if key in paragraph.text:
+        # Nettoyage des variations possibles des clés
+        cleaned_key = key.replace(" ", "")
+        cleaned_text = paragraph.text.replace(" ", "")
+        
+        if cleaned_key in cleaned_text:
+            # Reconstruction du texte avec remplacement
+            new_text = paragraph.text
             for run in paragraph.runs:
-                if key in run.text:
-                    run.text = run.text.replace(key, value)
+                for k, v in replacements.items():
+                    if k in run.text or k.replace(" ", "") in run.text:
+                        run.text = run.text.replace(k, v).replace(k.replace(" ", ""), v)
+            return
 
 def detecter_questions(doc):
     """Détection précise des questions avec regex améliorée"""
     questions = []
     current_question = None
-    # Support des formats 1.1, 1 . 1, 1.1.1, etc.
     pattern = re.compile(r'^(\d+[\. ]*\d*)\s*[-–—)\s.]*\s*(.+?)\?$')
     reponse_pattern = re.compile(r'^([A-D])[\s\-–—).]+\s*(.*?)({{checkbox}})?\s*$')
    
@@ -38,8 +43,9 @@ def detecter_questions(doc):
         # Détection des questions
         match_question = pattern.match(texte)
         if match_question:
-            # Nettoyage du numéro de question (supprime les espaces)
+            # Nettoyage du numéro de question
             question_num = re.sub(r'\s+', '.', match_question.group(1)).strip()
+            question_num = re.sub(r'\.+$', '', question_num)  # Supprime les points en trop
             
             current_question = {
                 "index": i,
@@ -88,17 +94,13 @@ def parse_correct_answers(file):
         st.error(f"Erreur de lecture du fichier de corrections : {str(e)}")
         return {}
 
-# =============================================
-# INTERFACE UTILISATEUR
-# =============================================
+# Interface utilisateur
 with st.expander("Étape 1: Importation des fichiers", expanded=True):
     excel_file = st.file_uploader("Fichier Excel (colonnes: Prénom, Nom, Email, Référence Session, Date Évaluation)", type="xlsx")
     word_file = st.file_uploader("Modèle Word", type="docx")
     correct_answers_file = st.file_uploader("Fichier des réponses correctes (Quizz.xlsx)", type=["xlsx"])
 
-# =============================================
-# CHARGEMENT DES QUESTIONS ET CORRECTIONS
-# =============================================
+# Chargement des questions et corrections
 if word_file:
     if 'questions' not in st.session_state or st.session_state.get('current_template') != word_file.name:
         doc = Document(word_file)
@@ -111,9 +113,7 @@ if correct_answers_file:
     st.session_state.correct_answers = parse_correct_answers(correct_answers_file)
     st.success(f"✅ {len(st.session_state.correct_answers)} réponses correctes chargées")
 
-# =============================================
-# CONFIGURATION DES QUESTIONS
-# =============================================
+# Configuration des questions
 st.markdown("### Configuration des questions")
 
 for q in st.session_state.get('questions', []):
@@ -144,9 +144,7 @@ for q in st.session_state.get('questions', []):
             st.session_state.figees[q_id] = True
             st.session_state.reponses_correctes[q_id] = options.index(bonne)
 
-# =============================================
-# FONCTION DE GÉNÉRATION AVEC CALCUL DES SCORES
-# =============================================
+# Fonction de génération avec calcul des scores
 def generer_document(row, template_path):
     """Génération avec calcul des scores par module"""
     try:
@@ -163,9 +161,16 @@ def generer_document(row, template_path):
         scores = {f"Module {i}": 0 for i in range(1, 6)}
         correct_answers = st.session_state.get('correct_answers', {})
         
-        # Remplacement des variables
+        # Remplacement des variables (paragraphes)
         for para in doc.paragraphs:
             remplacer_placeholders(para, replacements)
+
+        # Remplacement des variables (tableaux)
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for para in cell.paragraphs:
+                        remplacer_placeholders(para, replacements)
 
         # Traitement des questions
         for q in st.session_state.questions:
@@ -188,19 +193,18 @@ def generer_document(row, template_path):
                 idx = rep['index']
                 checkbox = "☑" if reponses.index(rep) == 0 else "☐"
                 
-                # Reconstruction du texte original avec lettre et réponse
-                texte_base = rep['original_text'].split(' ', 1)[0]  # Lettre de réponse
+                texte_base = rep['original_text'].split(' ', 1)[0]
                 texte_reponse = rep['texte']
                 ligne_complete = f"{texte_base} - {texte_reponse} {checkbox}"
                 
                 doc.paragraphs[idx].text = ligne_complete
 
             # Vérification de la réponse
-            question_num = q['texte'].split(" ")[0]  # Extrait le numéro de question (ex: "1.1")
-            module = f"Module {question_num.split('.')[0]}"  # Extrait le module (ex: "Module 1")
+            question_num = q['texte'].split(" ")[0]
+            question_num_clean = question_num.replace(" ", ".").strip()
+            question_num_clean = re.sub(r'\.+$', '', question_num_clean)  # Supprime les points en trop
             
-            # Nettoyage du numéro de question (supprime les espaces)
-            question_num_clean = re.sub(r'\s+', '.', str(question_num).strip())
+            module = f"Module {question_num_clean.split('.')[0]}"
             
             if question_num_clean in correct_answers:
                 correct_answer = correct_answers[question_num_clean].upper()
@@ -210,31 +214,26 @@ def generer_document(row, template_path):
                     scores[module] += 1
                     scores['Total'] = scores.get('Total', 0) + 1
 
-        # Calcul du résultat final
-        total_questions = 30
-        total_score = scores.get('Total', 0)
-        pourcentage = (total_score / total_questions) * 100 if total_questions > 0 else 0
-        
-        if pourcentage >= 75:
-            resultat_final = "Acquis"
-        elif pourcentage >= 50:
-            resultat_final = "En cours d’acquisition"
-        else:
-            resultat_final = "Non acquis"
-
-        # Insertion des résultats dans le document
+        # Préparation des remplacements de scores
         score_replacements = {
             '{{result_mod1}}': str(scores["Module 1"]),
             '{{result_mod2}}': str(scores["Module 2"]),
             '{{result_mod3}}': str(scores["Module 3"]),
             '{{result_mod4}}': str(scores["Module 4"]),
             '{{result_mod5}}': str(scores["Module 5"]),
-            '{{result_mod_total}}': str(scores.get('Total', 0)),
-            'Résultat de l’évaluation :': f'Résultat de l’évaluation : {resultat_final}'
+            '{{result_mod_total}}': str(scores.get('Total', 0))
         }
 
+        # Remplacement dans tous les paragraphes
         for para in doc.paragraphs:
             remplacer_placeholders(para, score_replacements)
+        
+        # Remplacement dans les tableaux
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for para in cell.paragraphs:
+                        remplacer_placeholders(para, score_replacements)
 
         return doc
         
@@ -242,9 +241,7 @@ def generer_document(row, template_path):
         st.error(f"Erreur de génération : {str(e)}")
         raise
 
-# =============================================
-# GÉNÉRATION PRINCIPALE
-# =============================================
+# Génération principale
 if excel_file and word_file and st.session_state.get('questions') and st.session_state.get('correct_answers'):
     if st.button("Générer les QCM", type="primary"):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -294,4 +291,3 @@ if excel_file and word_file and st.session_state.get('questions') and st.session
 
             except Exception as e:
                 st.error(f"ERREUR CRITIQUE : {str(e)}")
-                st.text(traceback.format_exc())
