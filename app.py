@@ -7,30 +7,27 @@ import tempfile
 from zipfile import ZipFile
 import re
 import traceback
-from docx.shared import Pt
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 st.set_page_config(page_title="Générateur de QCM", layout="centered")
 st.title("Générateur de QCM personnalisés")
 
 # =============================================
-# SECTION 1: UPLOAD DES FICHIERS
+# FONCTIONS UTILITAIRES
 # =============================================
-with st.expander("Étape 1: Importation des fichiers", expanded=True):
-    excel_file = st.file_uploader("Fichier Excel (colonnes: Prénom, Nom, Email, Référence Session, Date Évaluation)", type="xlsx")
-    word_file = st.file_uploader("Modèle Word", type="docx")
+def remplacer_placeholders(paragraph, replacements):
+    """Remplace les placeholders en préservant la mise en forme"""
+    for key, value in replacements.items():
+        if key in paragraph.text:
+            for run in paragraph.runs:
+                if key in run.text:
+                    run.text = run.text.replace(key, value)
 
-# =============================================
-# SECTION 2: DÉTECTION DES QUESTIONS (CORRIGÉE)
-# =============================================
 def detecter_questions(doc):
     """Détection précise des questions avec regex améliorée"""
     questions = []
     current_question = None
-    # Regex plus flexible pour les numéros de question
-    pattern = re.compile(r'^(\d+[\.\d]*)\s*[-–—)\s.]*\s*(.+?)\?$')
-    # Support des lettres maj/min et différents séparateurs
-    reponse_pattern = re.compile(r'^([A-Za-z])[\s\-–—).]+\s*(.*?)({{checkbox}})?\s*$')
+    pattern = re.compile(r'^(\d+\.\d+)\s*[-–—)\s.]*\s*(.+?)\?$')
+    reponse_pattern = re.compile(r'^([A-D])[\s\-–—).]+\s*(.*?)({{checkbox}})?\s*$')
    
     for i, para in enumerate(doc.paragraphs):
         texte = para.text.strip()
@@ -43,7 +40,7 @@ def detecter_questions(doc):
                 "texte": f"{match_question.group(1)} - {match_question.group(2)}?",
                 "reponses": [],
                 "correct_idx": None,
-                "original_text": texte  # Sauvegarder le texte original
+                "original_text": texte
             }
             questions.append(current_question)
        
@@ -51,7 +48,7 @@ def detecter_questions(doc):
         elif current_question:
             match_reponse = reponse_pattern.match(texte)
             if match_reponse:
-                lettre = match_reponse.group(1).upper()  # Standardiser en majuscules
+                lettre = match_reponse.group(1)
                 texte_rep = match_reponse.group(2).strip()
                 is_correct = match_reponse.group(3) is not None
                
@@ -65,79 +62,87 @@ def detecter_questions(doc):
                
                 if is_correct:
                     current_question["correct_idx"] = len(current_question["reponses"]) - 1
-
-    # Filtrer les questions valides avec au moins 2 réponses et réponse correcte
+   
     return [q for q in questions if q["correct_idx"] is not None and len(q["reponses"]) >= 2]
 
+def parse_correct_answers(file):
+    """Parse le fichier Quizz.xlsx et retourne un dictionnaire {question: réponse}"""
+    if file is None:
+        return {}
+        
+    try:
+        df = pd.read_excel(file)
+        df = df.dropna(subset=['Numéro de la question', 'Réponse correcte'])
+        df['Numéro de la question'] = df['Numéro de la question'].astype(str).str.strip()
+        df['Réponse correcte'] = df['Réponse correcte'].astype(str).str.strip().str.upper()
+        
+        return dict(zip(df['Numéro de la question'], df['Réponse correcte']))
+    
+    except Exception as e:
+        st.error(f"Erreur de lecture du fichier de corrections : {str(e)}")
+        return {}
+
 # =============================================
-# SECTION 3: CONFIGURATION DES QUESTIONS
+# INTERFACE UTILISATEUR
+# =============================================
+with st.expander("Étape 1: Importation des fichiers", expanded=True):
+    excel_file = st.file_uploader("Fichier Excel (colonnes: Prénom, Nom, Email, Référence Session, Date Évaluation)", type="xlsx")
+    word_file = st.file_uploader("Modèle Word", type="docx")
+    correct_answers_file = st.file_uploader("Fichier des réponses correctes (Quizz.xlsx)", type=["xlsx"])
+
+# =============================================
+# CHARGEMENT DES QUESTIONS ET CORRECTIONS
 # =============================================
 if word_file:
     if 'questions' not in st.session_state or st.session_state.get('current_template') != word_file.name:
-        # Réinitialiser la configuration si nouveau template
         doc = Document(word_file)
         st.session_state.questions = detecter_questions(doc)
         st.session_state.figees = {}
         st.session_state.reponses_correctes = {}
         st.session_state.current_template = word_file.name
 
-    st.markdown("### Configuration des questions")
+if correct_answers_file:
+    st.session_state.correct_answers = parse_correct_answers(correct_answers_file)
+    st.success(f"✅ {len(st.session_state.correct_answers)} réponses correctes chargées")
+
+# =============================================
+# CONFIGURATION DES QUESTIONS
+# =============================================
+st.markdown("### Configuration des questions")
+
+for q in st.session_state.get('questions', []):
+    q_id = q['index']
+    q_num = q['texte'].split()[0]
    
-    for q in st.session_state.questions:
-        q_id = q['index']
-        q_num = q['texte'].split()[0]
-       
-        col1, col2 = st.columns([1, 4])
-        with col1:
-            figer = st.checkbox(
-                f"Q{q_num}",
-                value=st.session_state.figees.get(q_id, False),
-                key=f"figer_{q_id}_{word_file.name[:5]}",  # Clé unique par template
-                help=q['texte']
+    col1, col2 = st.columns([1, 4])
+    with col1:
+        figer = st.checkbox(
+            f"Q{q_num}",
+            value=st.session_state.figees.get(q_id, False),
+            key=f"figer_{q_id}_{word_file.name[:5]}" if word_file else f"figer_{q_id}",
+            help=q['texte']
+        )
+   
+    with col2:
+        if figer:
+            options = [f"{r['lettre']} - {r['texte']}" for r in q['reponses']]
+            default_idx = q['correct_idx']
+           
+            bonne = st.selectbox(
+                f"Bonne réponse pour {q_num}",
+                options=options,
+                index=default_idx,
+                key=f"bonne_{q_id}_{word_file.name[:5]}" if word_file else f"bonne_{q_id}"
             )
-       
-        with col2:
-            if figer:
-                options = [f"{r['lettre']} - {r['texte']}" for r in q['reponses']]
-                default_idx = q['correct_idx']
-               
-                bonne = st.selectbox(
-                    f"Bonne réponse pour {q_num}",
-                    options=options,
-                    index=default_idx,
-                    key=f"bonne_{q_id}_{word_file.name[:5]}"
-                )
-               
-                st.session_state.figees[q_id] = True
-                st.session_state.reponses_correctes[q_id] = options.index(bonne)
+           
+            st.session_state.figees[q_id] = True
+            st.session_state.reponses_correctes[q_id] = options.index(bonne)
 
 # =============================================
-# SECTION 4: FONCTIONS DE GÉNÉRATION (CORRIGÉE)
+# FONCTION DE GÉNÉRATION AVEC CALCUL DES SCORES
 # =============================================
-def remplacer_placeholders(paragraph, replacements):
-    """Remplace les placeholders en préservant la mise en forme"""
-    for key, value in replacements.items():
-        if key in paragraph.text:
-            for run in paragraph.runs:
-                if key in run.text:
-                    run.text = run.text.replace(key, value)
-
-def reinserer_checkbox(para, texte, checkbox):
-    """Réinsère la checkbox avec mise en forme cohérente"""
-    # Nettoyer le paragraphe existant
-    para.clear()
-    
-    # Créer un premier run avec le texte
-    run = para.add_run(texte)
-    run.font.size = Pt(11)
-    
-    # Ajouter la checkbox à la fin
-    run = para.add_run(f" {checkbox}")
-    run.font.size = Pt(11)
-    para.alignment = WD_ALIGN_PARAGRAPH.LEFT
-
 def generer_document(row, template_path):
-    """Génération avec gestion correcte des checkboxes"""
+    """Génération avec calcul des scores par module"""
     try:
         doc = Document(template_path)
         replacements = {
@@ -148,11 +153,13 @@ def generer_document(row, template_path):
             '{{date_evaluation}}': str(row['Date Évaluation'])
         }
 
+        # Initialisation des scores
+        scores = {f"Module {i}": 0 for i in range(1, 6)}
+        correct_answers = st.session_state.get('correct_answers', {})
+        
         # Remplacement des variables
         for para in doc.paragraphs:
-            for key, value in replacements.items():
-                if key in para.text:
-                    remplacer_placeholders(para, {key: value})
+            remplacer_placeholders(para, replacements)
 
         # Traitement des questions
         for q in st.session_state.questions:
@@ -160,12 +167,10 @@ def generer_document(row, template_path):
             is_figee = st.session_state.figees.get(q['index'], False)
            
             if is_figee:
-                # Réponses figées
                 bonne_idx = st.session_state.reponses_correctes.get(q['index'], q['correct_idx'])
                 reponse_correcte = reponses.pop(bonne_idx)
                 reponses.insert(0, reponse_correcte)
             else:
-                # Mélanger en conservant la bonne réponse
                 correct_idx = next((i for i, r in enumerate(reponses) if r['correct']), None)
                 if correct_idx is not None:
                     reponse_correcte = reponses.pop(correct_idx)
@@ -180,19 +185,45 @@ def generer_document(row, template_path):
                 # Reconstruction du texte original avec lettre et réponse
                 texte_base = rep['original_text'].split(' ', 1)[0]  # Lettre de réponse
                 texte_reponse = rep['texte']
-                ligne_complete = f"{texte_base} - {texte_reponse}"
+                ligne_complete = f"{texte_base} - {texte_reponse} {checkbox}"
                 
-                reinserer_checkbox(doc.paragraphs[idx], ligne_complete, checkbox)
+                doc.paragraphs[idx].text = ligne_complete
+
+            # Vérification de la réponse
+            question_num = q['texte'].split(" ")[0]  # Extrait le numéro de question (ex: "1.1")
+            module = f"Module {question_num.split('.')[0]}"  # Extrait le module (ex: "Module 1")
+            
+            if question_num in correct_answers:
+                correct_answer = correct_answers[question_num].upper()
+                generated_answer = reponses[0]['lettre'].upper()
+                
+                if generated_answer == correct_answer:
+                    scores[module] += 1
+                    scores['Total'] = scores.get('Total', 0) + 1
+
+        # Insertion des résultats dans le document
+        score_replacements = {
+            '{{result_mod1}}': str(scores["Module 1"]),
+            '{{result_mod2}}': str(scores["Module 2"]),
+            '{{result_mod3}}': str(scores["Module 3"]),
+            '{{result_mod4}}': str(scores["Module 4"]),
+            '{{result_mod5}}': str(scores["Module 5"]),
+            '{{result_mod_total}}': str(scores.get('Total', 0))
+        }
+
+        for para in doc.paragraphs:
+            remplacer_placeholders(para, score_replacements)
 
         return doc
+        
     except Exception as e:
         st.error(f"Erreur de génération : {str(e)}")
         raise
 
 # =============================================
-# SECTION 5: GÉNÉRATION PRINCIPALE
+# GÉNÉRATION PRINCIPALE
 # =============================================
-if excel_file and word_file and st.session_state.get('questions'):
+if excel_file and word_file and st.session_state.get('questions') and st.session_state.get('correct_answers'):
     if st.button("Générer les QCM", type="primary"):
         with tempfile.TemporaryDirectory() as tmpdir:
             try:
