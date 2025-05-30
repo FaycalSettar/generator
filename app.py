@@ -7,6 +7,7 @@ import tempfile
 from zipfile import ZipFile
 import re
 import io
+import traceback
 
 st.set_page_config(page_title="Générateur de QCM", layout="centered")
 st.title("Générateur de QCM personnalisés")
@@ -16,46 +17,53 @@ def remplacer_placeholders(paragraph, replacements):
     if not paragraph.text:
         return
     for key, value in replacements.items():
-        cleaned_key = key.replace(" ", "").replace("\u00a0", "")
         for run in paragraph.runs:
             if key in run.text:
                 run.text = run.text.replace(key, value)
-            elif cleaned_key in run.text.replace(" ", "").replace("\u00a0", ""):
-                run.text = run.text.replace(cleaned_key, value)
+            # Gestion des espaces insécables
+            if key.replace(" ", "\u00a0") in run.text:
+                run.text = run.text.replace(key.replace(" ", "\u00a0"), value)
+            # Gestion sans espaces
+            if key.replace(" ", "") in run.text:
+                run.text = run.text.replace(key.replace(" ", ""), value)
 
 def detecter_questions(doc):
     questions = []
     current_question = None
-    # Pattern amélioré pour gérer les formats de numérotation variés
-    pattern = re.compile(r'^\s*(\d+(?:\.\d+)?)\s*[-–—)\s.]*\s*(.+?)\?$')
-    # Pattern amélioré pour les réponses (A - ..., B - ...)
-    reponse_pattern = re.compile(r'^([A-D])\s*[-\u2013\u2014)\s.]+\s*(.*?)(\{\{checkbox\}\})?\s*$')
+    question_pattern = re.compile(r'^\s*(\d+(?:\.\d+)?)\s*[-\u2013\u2014)\s.]*\s*(.+?)$')
+    reponse_pattern = re.compile(r'^([A-D])\s*[-\u2013\u2014)\s.]+\s*(.*?)(\{\{checkbox\}\})?$', re.IGNORECASE)
     
     for i, para in enumerate(doc.paragraphs):
         texte = para.text.strip()
-        texte = texte.replace("\u00a0", " ").replace("–", "-").replace("—", "-")
         
-        # Détection des questions
-        match_question = pattern.match(texte)
-        if match_question:
-            question_num = match_question.group(1).strip()
-            question_num = re.sub(r'\.$', '', question_num)  # Supprimer le point final
-            current_question = {
-                "index": i,
-                "texte": f"{question_num} - {match_question.group(2).strip()}?",
-                "reponses": [],
-                "correct_idx": None,
-                "original_text": texte
-            }
-            questions.append(current_question)
+        # Détection des questions (plus flexible)
+        if re.search(r'^\d+(\.\d+)?\s*[-–—)\s.]', texte) and not re.search(r'^\d+\s*\/\s*\d+', texte):
+            match = question_pattern.match(texte)
+            if match:
+                question_num = match.group(1).strip()
+                question_text = match.group(2).strip()
+                
+                # Nettoyer le texte de la question
+                if not question_text.endswith('?'):
+                    question_text += '?'
+                
+                current_question = {
+                    "index": i,
+                    "texte": f"{question_num} - {question_text}",
+                    "reponses": [],
+                    "correct_idx": None,
+                    "original_text": texte
+                }
+                questions.append(current_question)
+                continue
         
         # Détection des réponses
-        elif current_question and not texte.startswith('***'):
-            match_reponse = reponse_pattern.match(texte)
-            if match_reponse:
-                lettre = match_reponse.group(1)
-                texte_rep = match_reponse.group(2).strip()
-                is_correct = bool(match_reponse.group(3))
+        if current_question:
+            match = reponse_pattern.match(texte)
+            if match:
+                lettre = match.group(1).upper()
+                texte_rep = match.group(2).strip()
+                is_correct = bool(match.group(3))
                 
                 current_question["reponses"].append({
                     "index": i,
@@ -96,13 +104,13 @@ def calculer_resultat_final(total_score, total_questions=9):
     if pourcentage >= 75:
         return "Acquis"
     elif pourcentage >= 50:
-        return "En cours d’acquisition"
+        return "En cours d'acquisition"
     else:
         return "Non acquis"
 
-def generer_document(row, template_path, doc_template):
+def generer_document(row, doc_template):
     try:
-        doc = Document(doc_template)
+        doc = doc_template
         replacements = {
             '{{prenom}}': str(row['Prénom']),
             '{{nom}}': str(row['Nom']),
@@ -146,11 +154,13 @@ def generer_document(row, template_path, doc_template):
                 para_idx = rep['index']
                 if para_idx < len(doc.paragraphs):
                     checkbox = "☑" if reponses.index(rep) == 0 else "☐"
-                    doc.paragraphs[para_idx].text = f"{rep['lettre']} - {rep['texte']} {checkbox}"
+                    # Préserver la mise en forme originale
+                    doc.paragraphs[para_idx].text = ""
+                    run = doc.paragraphs[para_idx].add_run(f"{rep['lettre']} - {rep['texte']} {checkbox}")
             
             # Vérifier la réponse correcte
             if q_num in correct_answers:
-                correct_answer = correct_answers[q_num]
+                correct_answer = correct_answers[q_num].upper()
                 generated_answer = reponses[0]['lettre'].upper()
                 if generated_answer == correct_answer:
                     score_total += 1
@@ -177,7 +187,6 @@ def generer_document(row, template_path, doc_template):
         return doc, score_total, resultat_final
     except Exception as e:
         st.error(f"Erreur de génération : {str(e)}")
-        import traceback
         st.error(traceback.format_exc())
         return None, 0, "Erreur"
 
@@ -196,25 +205,37 @@ if 'reponses_correctes' not in st.session_state:
     st.session_state.reponses_correctes = {}
 if 'current_template' not in st.session_state:
     st.session_state.current_template = None
+if 'doc_template' not in st.session_state:
+    st.session_state.doc_template = None
 
 # Charger le template Word et détecter les questions
 if word_file:
     if st.session_state.get('current_template') != word_file.name:
         try:
-            doc = Document(io.BytesIO(word_file.getvalue()))
+            # Charger le document
+            doc_bytes = word_file.getvalue()
+            doc = Document(io.BytesIO(doc_bytes))
+            st.session_state.doc_template = doc
+            
+            # Détecter les questions
             questions = detecter_questions(doc)
             st.session_state.questions = questions
             st.session_state.current_template = word_file.name
             st.success(f"✅ {len(questions)} questions détectées dans le document")
             
             # Afficher les questions détectées pour vérification
-            with st.expander("Questions détectées"):
+            with st.expander("Questions détectées (Vérification)"):
+                if not questions:
+                    st.warning("Aucune question détectée. Vérifiez le format de votre document.")
                 for i, q in enumerate(questions):
-                    st.write(f"**Question {i+1}:** {q['texte']}")
+                    st.subheader(f"Question {i+1}: {q['texte']}")
                     for j, r in enumerate(q['reponses']):
-                        st.write(f" - {'✅' if j == q['correct_idx'] else '☐'} {r['lettre']}: {r['texte']}")
+                        prefix = "✅" if j == q['correct_idx'] else "☐"
+                        st.write(f"{prefix} {r['lettre']}: {r['texte']}")
+                        st.caption(f"Original: '{r['original_text']}'")
         except Exception as e:
             st.error(f"Erreur lors du chargement du document Word: {str(e)}")
+            st.error(traceback.format_exc())
 
 # Charger les réponses correctes
 if correct_answers_file:
@@ -229,32 +250,34 @@ if st.session_state.questions:
     for q in st.session_state.questions:
         q_id = q['index']
         q_num = q['texte'].split()[0]
-        col1, col2 = st.columns([1, 4])
         
+        st.markdown(f"**Question {q_num}**")
+        st.write(q['texte'])
+        
+        col1, col2 = st.columns([1, 4])
         with col1:
             figer = st.checkbox(
-                f"Q{q_num}", 
+                "Figer cette question", 
                 value=st.session_state.figees.get(q_id, False), 
                 key=f"figer_{q_id}"
             )
         
-        with col2:
-            if figer:
-                options = [f"{r['lettre']} - {r['texte']}" for r in q['reponses']]
-                default_idx = q['correct_idx']
-                
-                bonne = st.selectbox(
-                    f"Bonne réponse pour {q_num}", 
-                    options=options, 
-                    index=default_idx, 
-                    key=f"bonne_{q_id}"
-                )
-                
-                st.session_state.figees[q_id] = True
-                st.session_state.reponses_correctes[q_id] = options.index(bonne)
+        if figer:
+            options = [f"{r['lettre']} - {r['texte']}" for r in q['reponses']]
+            default_idx = q['correct_idx']
+            
+            bonne = st.selectbox(
+                f"Sélectionnez la bonne réponse pour {q_num}", 
+                options=options, 
+                index=default_idx, 
+                key=f"bonne_{q_id}"
+            )
+            
+            st.session_state.figees[q_id] = True
+            st.session_state.reponses_correctes[q_id] = options.index(bonne)
 
 # Génération des documents
-if excel_file and word_file and st.session_state.get('questions') and st.button("Générer les QCM", type="primary"):
+if excel_file and st.session_state.get('questions') and st.button("Générer les QCM", type="primary"):
     try:
         # Lire le fichier Excel
         df = pd.read_excel(excel_file)
@@ -266,10 +289,7 @@ if excel_file and word_file and st.session_state.get('questions') and st.button(
             st.error(f"Colonnes manquantes dans le fichier Excel: {', '.join(missing)}")
             st.stop()
         
-        # Préparer le template Word
-        doc_template = Document(io.BytesIO(word_file.getvalue()))
-        
-        # Créer un fichier ZIP
+        # Préparer le ZIP
         zip_buffer = io.BytesIO()
         recap_data = []
         
@@ -279,12 +299,15 @@ if excel_file and word_file and st.session_state.get('questions') and st.button(
             
             for idx, row in df.iterrows():
                 try:
+                    # Créer une copie du template pour chaque étudiant
+                    doc_copy = Document(io.BytesIO(word_file.getvalue()))
+                    
                     # Générer le document personnalisé
-                    doc, score, resultat = generer_document(
-                        row, 
-                        word_file.name, 
-                        doc_template
-                    )
+                    doc, score, resultat = generer_document(row, doc_copy)
+                    
+                    if doc is None:
+                        st.error(f"Échec de génération pour {row['Prénom']} {row['Nom']}")
+                        continue
                     
                     # Ajouter au récapitulatif
                     recap_data.append({
@@ -313,10 +336,11 @@ if excel_file and word_file and st.session_state.get('questions') and st.button(
                     continue
         
         # Ajouter le récapitulatif au ZIP
-        df_recap = pd.DataFrame(recap_data)
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as recap_file:
-            df_recap.to_excel(recap_file.name, index=False)
-            zipf.write(recap_file.name, "Recapitulatif_QCM.xlsx")
+        if recap_data:
+            df_recap = pd.DataFrame(recap_data)
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as recap_file:
+                df_recap.to_excel(recap_file.name, index=False)
+                zipf.write(recap_file.name, "Recapitulatif_QCM.xlsx")
         
         # Télécharger le ZIP
         zip_buffer.seek(0)
@@ -330,7 +354,6 @@ if excel_file and word_file and st.session_state.get('questions') and st.button(
         
     except Exception as e:
         st.error(f"ERREUR CRITIQUE : {str(e)}")
-        import traceback
         st.error(traceback.format_exc())
 
 # Section d'information
