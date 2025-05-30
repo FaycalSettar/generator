@@ -30,61 +30,100 @@ def remplacer_placeholders(paragraph, replacements):
             if ns in run.text:
                 run.text = run.text.replace(ns, value)
 
+import streamlit as st
+import pandas as pd
+from docx import Document
+import random
+import os
+import tempfile
+from zipfile import ZipFile
+import re
+import io
+import traceback
+
+st.set_page_config(page_title="Générateur de QCM", layout="centered")
+st.title("Générateur de QCM personnalisés")
+
+# — Fonctions utilitaires —
+
+def remplacer_placeholders(paragraph, replacements):
+    if not paragraph.text:
+        return
+    for key, value in replacements.items():
+        for run in paragraph.runs:
+            if key in run.text:
+                run.text = run.text.replace(key, value)
+            # espaces insécables
+            ni = key.replace(" ", "\u00a0")
+            if ni in run.text:
+                run.text = run.text.replace(ni, value)
+            # sans espaces
+            ns = key.replace(" ", "")
+            if ns in run.text:
+                run.text = run.text.replace(ns, value)
+
 def detecter_questions(doc):
     questions = []
     current_question = None
-    # pattern questions : 1.1 - Texte ? ou 1.1 Texte
-    question_pattern = re.compile(r'^\s*(\d+(?:\.\d+)?)\s*[-\u2013\u2014)\s.]*\s*(.+?)(\?|$)')
-    # pattern réponses : A - Texte {{checkbox}}
-    reponse_pattern = re.compile(r'^([A-D])\s*[-\u2013\u2014)\s.]+\s*(.*?)(\{\{checkbox\}\})?$', re.IGNORECASE)
+
+    # Nouvelle regex : accepte 1, 1.1, 1.1.2..., finit par '?'
+    question_pattern = re.compile(
+        r'^\s*(\d+(?:\.\d+)*)\s*[-\s–—.]*\s*(.+?)\s*\?$'
+    )
+    answer_pattern = re.compile(
+        r'^([A-D])\s*[-\s–—.]+\s*(.*?)(\{\{checkbox\}\})?$', re.IGNORECASE
+    )
 
     for i, para in enumerate(doc.paragraphs):
-        texte = para.text.strip()
-        # détection question
+        texte = para.text.strip().replace("\u00a0"," ").replace("–","-").replace("—","-")
+        if not texte:
+            continue
+
+        # DEBUG : afficher en console chaque paragraphe testé
+        st.write(f"PARA {i}: «{texte}»")
+
         m_q = question_pattern.match(texte)
         if m_q:
-            num = m_q.group(1).strip()
-            txt = m_q.group(2).strip()
-            if not txt.endswith('?'):
-                txt += '?'
+            num = m_q.group(1)
+            txt = m_q.group(2)
             current_question = {
                 "index": i,
-                "texte": f"{num} - {txt}",
+                "texte": f"{num} - {txt}?",
                 "reponses": [],
                 "correct_idx": None,
                 "original_text": texte
             }
             questions.append(current_question)
             continue
-        # détection réponse si on est dans une question
+
         if current_question:
-            m_r = reponse_pattern.match(texte)
+            m_r = answer_pattern.match(texte)
             if m_r:
                 lettre = m_r.group(1).upper()
-                rep_text = m_r.group(2).strip()
+                rep = m_r.group(2).strip()
                 is_corr = bool(m_r.group(3))
-                rsp = {
+                current_question["reponses"].append({
                     "index": i,
                     "lettre": lettre,
-                    "texte": rep_text,
+                    "texte": rep,
                     "correct": is_corr,
                     "original_text": texte
-                }
-                current_question["reponses"].append(rsp)
+                })
                 if is_corr:
                     current_question["correct_idx"] = len(current_question["reponses"]) - 1
 
-    # filtrage et avertissements
+    # Filtrer et avertir
     valid = []
     for q in questions:
         if q.get("correct_idx") is not None and len(q["reponses"]) >= 2:
             valid.append(q)
         else:
-            st.warning(
-                f"Question ignorée : « {q['texte']} » "
-                "– pas de bonne réponse détectée ou <2 réponses"
-            )
+            st.warning(f"Ignorée : {q['texte']} (rép. correcte manquante ou <2 réponses)")
     return valid
+
+# (Le reste du code — parse_correct_answers, calculer_resultat_final, generer_document, et UI — reste inchangé)
+
+
 
 def parse_correct_answers(f):
     if f is None:
