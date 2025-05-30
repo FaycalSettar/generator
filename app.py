@@ -30,48 +30,55 @@ def remplacer_placeholders(paragraph, replacements):
 def detecter_questions(doc):
     questions = []
     current_question = None
-    question_pattern = re.compile(r'^\s*(\d+(?:\.\d+)?)\s*[-\u2013\u2014)\s.]*\s*(.+?)$')
-    reponse_pattern = re.compile(r'^([A-D])\s*[-\u2013\u2014)\s.]+\s*(.*?)(\{\{checkbox\}\})?$', re.IGNORECASE)
+    # Pattern amélioré pour détecter les questions avec différents formats
+    question_pattern = re.compile(
+        r'^\s*(\d+(?:\.\d+)?)\s*[-\u2013\u2014)\s.]*\s*(.+?)(\?|$)'
+    )
+    # Pattern pour les réponses
+    reponse_pattern = re.compile(
+        r'^([A-D])\s*[-\u2013\u2014)\s.]+\s*(.*?)(\{\{checkbox\}\})?$', 
+        re.IGNORECASE
+    )
     
     for i, para in enumerate(doc.paragraphs):
         texte = para.text.strip()
         
-        # Détection des questions (plus flexible)
-        if re.search(r'^\d+(\.\d+)?\s*[-–—)\s.]', texte) and not re.search(r'^\d+\s*\/\s*\d+', texte):
-            match = question_pattern.match(texte)
-            if match:
-                question_num = match.group(1).strip()
-                question_text = match.group(2).strip()
+        # Détection des questions
+        match_question = question_pattern.match(texte)
+        if match_question:
+            question_num = match_question.group(1).strip()
+            question_text = match_question.group(2).strip()
+            
+            # Ajouter le point d'interrogation manquant si nécessaire
+            if not question_text.endswith('?'):
+                question_text += '?'
                 
-                # Nettoyer le texte de la question
-                if not question_text.endswith('?'):
-                    question_text += '?'
-                
-                current_question = {
-                    "index": i,
-                    "texte": f"{question_num} - {question_text}",
-                    "reponses": [],
-                    "correct_idx": None,
-                    "original_text": texte
-                }
-                questions.append(current_question)
-                continue
+            current_question = {
+                "index": i,
+                "texte": f"{question_num} - {question_text}",
+                "reponses": [],
+                "correct_idx": None,
+                "original_text": texte
+            }
+            questions.append(current_question)
+            continue
         
         # Détection des réponses
         if current_question:
-            match = reponse_pattern.match(texte)
-            if match:
-                lettre = match.group(1).upper()
-                texte_rep = match.group(2).strip()
-                is_correct = bool(match.group(3))
+            match_reponse = reponse_pattern.match(texte)
+            if match_reponse:
+                lettre = match_reponse.group(1).upper()
+                texte_rep = match_reponse.group(2).strip()
+                is_correct = bool(match_reponse.group(3))
                 
-                current_question["reponses"].append({
+                reponse = {
                     "index": i,
                     "lettre": lettre,
                     "texte": texte_rep,
                     "correct": is_correct,
                     "original_text": texte
-                })
+                }
+                current_question["reponses"].append(reponse)
                 
                 if is_correct:
                     current_question["correct_idx"] = len(current_question["reponses"]) - 1
@@ -110,7 +117,7 @@ def calculer_resultat_final(total_score, total_questions=9):
 
 def generer_document(row, doc_template):
     try:
-        doc = doc_template
+        doc = Document(io.BytesIO(doc_template))
         replacements = {
             '{{prenom}}': str(row['Prénom']),
             '{{nom}}': str(row['Nom']),
@@ -154,9 +161,10 @@ def generer_document(row, doc_template):
                 para_idx = rep['index']
                 if para_idx < len(doc.paragraphs):
                     checkbox = "☑" if reponses.index(rep) == 0 else "☐"
-                    # Préserver la mise en forme originale
-                    doc.paragraphs[para_idx].text = ""
-                    run = doc.paragraphs[para_idx].add_run(f"{rep['lettre']} - {rep['texte']} {checkbox}")
+                    # Réinitialiser le paragraphe
+                    doc.paragraphs[para_idx].clear()
+                    run = doc.paragraphs[para_idx].add_run()
+                    run.text = f"{rep['lettre']} - {rep['texte']} {checkbox}"
             
             # Vérifier la réponse correcte
             if q_num in correct_answers:
@@ -215,24 +223,26 @@ if word_file:
             # Charger le document
             doc_bytes = word_file.getvalue()
             doc = Document(io.BytesIO(doc_bytes))
-            st.session_state.doc_template = doc
+            st.session_state.doc_template = doc_bytes  # Stocker les bytes pour réutilisation
             
             # Détecter les questions
             questions = detecter_questions(doc)
             st.session_state.questions = questions
             st.session_state.current_template = word_file.name
-            st.success(f"✅ {len(questions)} questions détectées dans le document")
             
-            # Afficher les questions détectées pour vérification
-            with st.expander("Questions détectées (Vérification)"):
-                if not questions:
-                    st.warning("Aucune question détectée. Vérifiez le format de votre document.")
-                for i, q in enumerate(questions):
-                    st.subheader(f"Question {i+1}: {q['texte']}")
-                    for j, r in enumerate(q['reponses']):
-                        prefix = "✅" if j == q['correct_idx'] else "☐"
-                        st.write(f"{prefix} {r['lettre']}: {r['texte']}")
-                        st.caption(f"Original: '{r['original_text']}'")
+            if questions:
+                st.success(f"✅ {len(questions)} questions détectées dans le document")
+                
+                # Afficher les questions détectées pour vérification
+                with st.expander("Questions détectées (Vérification)", expanded=True):
+                    for i, q in enumerate(questions):
+                        st.subheader(f"Question {i+1}: {q['texte']}")
+                        for j, r in enumerate(q['reponses']):
+                            prefix = "✅" if j == q['correct_idx'] else "☐"
+                            st.write(f"{prefix} {r['lettre']}: {r['texte']}")
+                            st.caption(f"Original: '{r['original_text']}'")
+            else:
+                st.warning("⚠️ Aucune question détectée. Vérifiez le format de votre document.")
         except Exception as e:
             st.error(f"Erreur lors du chargement du document Word: {str(e)}")
             st.error(traceback.format_exc())
@@ -247,34 +257,44 @@ if correct_answers_file:
 if st.session_state.questions:
     st.markdown("### Configuration des questions")
     
-    for q in st.session_state.questions:
+    # Réinitialiser l'état si le nombre de questions a changé
+    if 'prev_question_count' not in st.session_state:
+        st.session_state.prev_question_count = len(st.session_state.questions)
+    elif st.session_state.prev_question_count != len(st.session_state.questions):
+        st.session_state.figees = {}
+        st.session_state.reponses_correctes = {}
+        st.session_state.prev_question_count = len(st.session_state.questions)
+    
+    for i, q in enumerate(st.session_state.questions):
         q_id = q['index']
         q_num = q['texte'].split()[0]
         
-        st.markdown(f"**Question {q_num}**")
-        st.write(q['texte'])
-        
-        col1, col2 = st.columns([1, 4])
-        with col1:
+        with st.expander(f"Question {q_num}", expanded=(i == 0)):
+            st.write(f"**{q['texte']}**")
+            
             figer = st.checkbox(
                 "Figer cette question", 
                 value=st.session_state.figees.get(q_id, False), 
                 key=f"figer_{q_id}"
             )
-        
-        if figer:
-            options = [f"{r['lettre']} - {r['texte']}" for r in q['reponses']]
-            default_idx = q['correct_idx']
             
-            bonne = st.selectbox(
-                f"Sélectionnez la bonne réponse pour {q_num}", 
-                options=options, 
-                index=default_idx, 
-                key=f"bonne_{q_id}"
-            )
-            
-            st.session_state.figees[q_id] = True
-            st.session_state.reponses_correctes[q_id] = options.index(bonne)
+            if figer:
+                options = [f"{r['lettre']} - {r['texte']}" for r in q['reponses']]
+                default_idx = q['correct_idx']
+                
+                if default_idx is None:
+                    default_idx = 0
+                    st.warning("Aucune réponse correcte détectée par défaut. Sélectionnez manuellement.")
+                
+                bonne = st.selectbox(
+                    f"Sélectionnez la bonne réponse pour {q_num}", 
+                    options=options, 
+                    index=default_idx, 
+                    key=f"bonne_{q_id}"
+                )
+                
+                st.session_state.figees[q_id] = True
+                st.session_state.reponses_correctes[q_id] = options.index(bonne)
 
 # Génération des documents
 if excel_file and st.session_state.get('questions') and st.button("Générer les QCM", type="primary"):
@@ -299,11 +319,11 @@ if excel_file and st.session_state.get('questions') and st.button("Générer les
             
             for idx, row in df.iterrows():
                 try:
-                    # Créer une copie du template pour chaque étudiant
-                    doc_copy = Document(io.BytesIO(word_file.getvalue()))
-                    
                     # Générer le document personnalisé
-                    doc, score, resultat = generer_document(row, doc_copy)
+                    doc, score, resultat = generer_document(
+                        row, 
+                        st.session_state.doc_template
+                    )
                     
                     if doc is None:
                         st.error(f"Échec de génération pour {row['Prénom']} {row['Nom']}")
