@@ -31,10 +31,10 @@ def remplacer_placeholders(paragraph, replacements):
 def detecter_questions(doc):
     questions = []
     current_question = None
-    pattern = re.compile(r'^(\d+[\. ]*\d*)\s*[-\u2013\u2014)\s.]*\s*(.+?)\?$')
+    pattern = re.compile(r'^\s*(\d+(?:[., ]\d+)?)\s*[-–—)\s.]*\s*(.+?)\?$')
     reponse_pattern = re.compile(r'^([A-D])[\s\-\u2013\u2014).]+\s*(.*?)(\{\{checkbox\}\})?\s*$')
     for i, para in enumerate(doc.paragraphs):
-        texte = para.text.strip()
+        texte = para.text.strip().replace("\u00a0", " ").replace("–", "-").replace("—", "-")
         match_question = pattern.match(texte)
         if match_question:
             question_num = re.sub(r'\s+', '.', match_question.group(1)).strip()
