@@ -149,12 +149,19 @@ def generer_document(row, template_bytes):
     try:
         doc = Document(io.BytesIO(template_bytes))
         # placeholders apprenant
+        # Gestion de la date au format JJ/MM/AAAA si possible
+        date_eval = row['Date Évaluation']
+        if isinstance(date_eval, (pd.Timestamp,)):
+            date_eval = date_eval.strftime("%d/%m/%Y")
+        else:
+            date_eval = str(date_eval)
+
         repl = {
             '{{prenom}}': str(row['Prénom']),
             '{{nom}}': str(row['Nom']),
             '{{email}}': str(row['Email']),
             '{{ref_session}}': str(row['Référence Session']),
-            '{{date_evaluation}}': str(row['Date Évaluation'])
+            '{{date_evaluation}}': date_eval
         }
         # appliquer remplacements (paragraphes + cellules)
         for p in doc.paragraphs:
@@ -165,32 +172,27 @@ def generer_document(row, template_bytes):
                     for p in c.paragraphs:
                         remplacer_placeholders(p, repl)
 
-        # Initialisation des compteurs par module
-        total_par_module = {}
-        correct_par_module = {}
-        questions_par_module = {}  # Nouveau: stocke le nombre de questions par module
-        
-        # On parcourt toutes les questions pour compter le total par module
+        # — Modifications apportées : module unique '1' —
+
+        # Initialisation des compteurs par module (unique '1')
+        total_par_module = {'1': 0}
+        correct_par_module = {'1': 0}
+        questions_par_module = {'1': 0}
+
+        # Compter le nombre de questions pour le module unique
         for q in st.session_state.questions:
-            # Déterminer la clé de module : partie avant le premier point si numéroté,
-            # sinon utiliser le numéro fictif (ex. "NN1").
-            if q['numero'].startswith("NN"):
-                module_key = q['numero']
-            else:
-                module_key = q['numero'].split('.')[0]
-            
-            total_par_module[module_key] = total_par_module.get(module_key, 0) + 1
-            correct_par_module[module_key] = 0
-            # Initialiser le compteur de questions par module
+            module_key = '1'
             questions_par_module[module_key] = questions_par_module.get(module_key, 0) + 1
+            total_par_module[module_key] = questions_par_module[module_key]
+            correct_par_module[module_key] = 0
 
         corr = st.session_state.get('correct_answers', {})
         score_total = 0
-        total_questions = sum(questions_par_module.values())  # Calcul du total des questions
+        total_questions = questions_par_module['1']  # Total des questions
 
         # Traiter chaque question pour mélanger/ranger les réponses et compter les bonnes
         for q in st.session_state.questions:
-            module_key = q['numero'].split('.')[0] if not q['numero'].startswith("NN") else q['numero']
+            module_key = '1'
             reps = q['reponses'].copy()
             q_num = q['numero']  # clé pour chercher dans corr
 
@@ -214,23 +216,22 @@ def generer_document(row, template_bytes):
                     doc.paragraphs[idx].clear()
                     doc.paragraphs[idx].add_run(f"{r['lettre']} - {r['texte']} {box}")
 
-            # Comptage du score par module et total
+            # Comptage du score (module '1' unique) et total
             if q_num in corr and reps[0]['lettre'].upper() == corr[q_num]:
                 correct_par_module[module_key] += 1
                 score_total += 1
 
-        # Préparation des remplacements finaux pour chaque module
+        # Préparation des remplacements finaux pour le module unique '1'
         sr = {}
-        # Pour chaque module, on remplace {{result_modX}} par le score brut
-        for module_key, tot in questions_par_module.items():  # Utilisation de questions_par_module
-            score_mod = correct_par_module.get(module_key, 0)
-            sr[f'{{{{result_mod{module_key}}}}}'] = str(score_mod)
-            # Ajout du nombre de questions par module
-            sr[f'{{{{total_mod{module_key}}}}}'] = str(tot)
+        score_mod = correct_par_module['1']
+        sr['{{result_mod1}}'] = str(score_mod)
+        sr['{{total_mod1}}'] = str(total_par_module['1'])
 
-        # Remplacement du score total et du résultat global
+        # Score total et total des questions
         sr['{{result_mod_total}}'] = str(score_total)
-        sr['{{total_questions}}'] = str(total_questions)  # Nouveau: total des questions
+        sr['{{total_questions}}'] = str(total_questions)
+
+        # Calcul de l'évaluation finale
         resultat_global = calculer_resultat_final(score_total, total_questions)
         sr['{{result_evaluation}}'] = resultat_global
 
@@ -344,17 +345,20 @@ if excel_file and st.session_state.questions and st.button("Générer les QCM"):
                         "Pourcentage": f"{(sc/tot_q)*100:.1f}%" if tot_q > 0 else "0%",
                         "Résultat": re
                     })
+                    # Sauvegarde du fichier Word dans un BytesIO pour l'ajouter au ZIP
+                    bytes_io = io.BytesIO()
+                    doc_out.save(bytes_io)
                     fn = f"QCM_{row['Prénom']}_{row['Nom']}.docx"
-                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.docx')
-                    doc_out.save(tmp.name)
-                    zf.write(tmp.name, fn)
+                    zf.writestr(fn, bytes_io.getvalue())
                 prog.progress((i+1)/total)
 
             if recap:
                 df_r = pd.DataFrame(recap)
-                tmp2 = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
-                df_r.to_excel(tmp2.name, index=False)
-                zf.write(tmp2.name, "Recapitulatif_QCM.xlsx")
+                excel_buffer = io.BytesIO()
+                with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
+                    df_r.to_excel(writer, index=False, sheet_name="Récapitulatif")
+                excel_buffer.seek(0)
+                zf.writestr("Recapitulatif_QCM.xlsx", excel_buffer.getvalue())
 
         buf.seek(0)
         st.success("✅ Génération terminée")
