@@ -286,7 +286,7 @@ def generer_document(row, template_path):
         
         # Ajout des scores par module
         for i, module in enumerate(modules, 1):
-            score_replacements[f'{{{{result_mod{i}}}}'] = str(scores[module])
+            score_replacements[f'{{{{result_mod{i}}}}}'] = str(scores[module])
         
         # Remplacement dans tous les paragraphes
         for para in doc.paragraphs:
