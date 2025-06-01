@@ -139,11 +139,11 @@ def calculer_resultat_final(score, total_q):
     """
     pct = (score / total_q) * 100 if total_q > 0 else 0
     if pct >= 75:
-        return "Acquis"
+        return "Acquis : ≥ 75%"
     elif pct >= 50:
-        return "En cours d'acquisition"
+        return "En cours d'acquisition : 50–75%"
     else:
-        return "Non acquis"
+        return "Non acquis : < 50%"
 
 def generer_document(row, template_bytes):
     try:
@@ -168,6 +168,8 @@ def generer_document(row, template_bytes):
         # Initialisation des compteurs par module
         total_par_module = {}
         correct_par_module = {}
+        questions_par_module = {}  # Nouveau: stocke le nombre de questions par module
+        
         # On parcourt toutes les questions pour compter le total par module
         for q in st.session_state.questions:
             # Déterminer la clé de module : partie avant le premier point si numéroté,
@@ -176,11 +178,15 @@ def generer_document(row, template_bytes):
                 module_key = q['numero']
             else:
                 module_key = q['numero'].split('.')[0]
+            
             total_par_module[module_key] = total_par_module.get(module_key, 0) + 1
             correct_par_module[module_key] = 0
+            # Initialiser le compteur de questions par module
+            questions_par_module[module_key] = questions_par_module.get(module_key, 0) + 1
 
         corr = st.session_state.get('correct_answers', {})
         score_total = 0
+        total_questions = sum(questions_par_module.values())  # Calcul du total des questions
 
         # Traiter chaque question pour mélanger/ranger les réponses et compter les bonnes
         for q in st.session_state.questions:
@@ -216,16 +222,16 @@ def generer_document(row, template_bytes):
         # Préparation des remplacements finaux pour chaque module
         sr = {}
         # Pour chaque module, on remplace {{result_modX}} par le score brut
-        for module_key, tot in total_par_module.items():
+        for module_key, tot in questions_par_module.items():  # Utilisation de questions_par_module
             score_mod = correct_par_module.get(module_key, 0)
             sr[f'{{{{result_mod{module_key}}}}}'] = str(score_mod)
-            # Si le template prévoit un libellé d'évaluation par module, on peut ajouter :
-            # sr[f'{{{{result_mod{module_key}_eval}}}}'] =
-            #     calculer_resultat_final(score_mod, tot)
+            # Ajout du nombre de questions par module
+            sr[f'{{{{total_mod{module_key}}}}}'] = str(tot)
 
         # Remplacement du score total et du résultat global
         sr['{{result_mod_total}}'] = str(score_total)
-        resultat_global = calculer_resultat_final(score_total, sum(total_par_module.values()))
+        sr['{{total_questions}}'] = str(total_questions)  # Nouveau: total des questions
+        resultat_global = calculer_resultat_final(score_total, total_questions)
         sr['{{result_evaluation}}'] = resultat_global
 
         # Appliquer remplacements finaux (paragraphes + cellules)
@@ -237,12 +243,19 @@ def generer_document(row, template_bytes):
                     for p in c.paragraphs:
                         remplacer_placeholders(p, sr)
 
-        return doc, score_total, resultat_global
+        # Remplacer dans les en-têtes et pieds de page
+        for section in doc.sections:
+            for header in section.header.paragraphs:
+                remplacer_placeholders(header, sr)
+            for footer in section.footer.paragraphs:
+                remplacer_placeholders(footer, sr)
+
+        return doc, score_total, resultat_global, total_questions
 
     except Exception as e:
         st.error(f"Erreur génération doc : {e}")
         st.error(traceback.format_exc())
-        return None, 0, "Erreur"
+        return None, 0, "Erreur", 0
 
 # — Interface Streamlit —
 
@@ -320,13 +333,15 @@ if excel_file and st.session_state.questions and st.button("Générer les QCM"):
             prog  = st.progress(0)
             total = len(df)
             for i, row in df.iterrows():
-                doc_out, sc, re = generer_document(row, st.session_state.doc_template)
+                doc_out, sc, re, tot_q = generer_document(row, st.session_state.doc_template)
                 if doc_out:
                     recap.append({
                         "Prénom": row["Prénom"],
                         "Nom": row["Nom"],
                         "Réf": row["Référence Session"],
                         "Score": sc,
+                        "Total Questions": tot_q,
+                        "Pourcentage": f"{(sc/tot_q)*100:.1f}%" if tot_q > 0 else "0%",
                         "Résultat": re
                     })
                     fn = f"QCM_{row['Prénom']}_{row['Nom']}.docx"
@@ -348,6 +363,11 @@ if excel_file and st.session_state.questions and st.button("Générer les QCM"):
             file_name="QCM_Personnalises.zip",
             mime="application/zip"
         )
+        
+        # Afficher un aperçu du récapitulatif
+        st.subheader("Récapitulatif des résultats")
+        st.dataframe(pd.DataFrame(recap))
+        
     except Exception as e:
         st.error(f"ERREUR critique : {e}")
         st.error(traceback.format_exc())
