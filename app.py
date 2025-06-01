@@ -31,19 +31,35 @@ def detecter_questions(doc):
     Détecte les questions dans le document Word, en associant à chaque question son module.
     Supporte :
       - En-têtes "Module X :" pour définir le contexte de module.
-      - Questions numérotées (1.1, 2.3, etc.) se terminant par '?'
-      - Questions non numérotées commençant par '-' et finissant par '?'
-      - Réponses A–D suivies soit de '{{checkbox}}', soit du caractère '☑'
-    Retourne une liste de dicts avec clés : index, texte, numero, module, reponses, correct_idx.
+      - Questions numérotées (1.1, 2.3, etc.) se terminant par '?' éventuellement suivies
+        d'une parenthèse descriptive (ex. "… ? (Plusieurs réponses possibles)").
+      - Questions non numérotées commençant par '-' et finissant par '?' éventuellement suivies
+        d'une parenthèse descriptive.
+      - Réponses A–D suivies soit de '{{checkbox}}', soit du caractère '☑'.
+    Retourne une liste de dictionnaires, chacun contenant :
+      - "index" : index du paragraphe dans le document
+      - "texte"  : libellé complet "numero - question ?"
+      - "numero" : "1.1" ou "NNx" pour non-numérotées
+      - "module" : numéro du module courant (ex. "1", "2", etc.), ou "0" si aucun module déclaré
+      - "reponses": liste de dictionnaires pour chaque proposition (lettre, texte, correct, index)
+      - "correct_idx": position dans la liste "reponses" de la/du dernière(s) bonne(s) réponse(s)
+      - "original_text": texte brut tel qu'il apparaît dans le paragraphe
     """
     questions = []
     current_question = None
     compteur_non_numerote = 0
     current_module = None
 
+    # Reconnaît "Module 1 :" ou "Module 2 -", insensible à la casse
     pattern_module = re.compile(r'^\s*Module\s+(\d+)\s*[:\-]?', re.IGNORECASE)
-    pattern_num = re.compile(r'^\s*(\d+(?:\.\d+)*)\s*[-\s–—.]*\s*(.+?)\s*\?$')
-    pattern_non_num = re.compile(r'^\s*[-–—]\s*(.+?)\s*\?$')
+    # Questions numérotées finissant par '?' et éventuellement " (…)" après
+    pattern_num = re.compile(
+        r'^\s*(\d+(?:\.\d+)*)\s*[-\s–—.]*\s*(.+?)\s*\?(?:\s*\(.*\))?$'
+    )
+    # Questions non-numérotées commençant par '-' et finissant par '?' et éventuellement "(…)"
+    pattern_non_num = re.compile(
+        r'^\s*[-–—]\s*(.+?)\s*\?(?:\s*\(.*\))?$'
+    )
 
     for i, para in enumerate(doc.paragraphs):
         texte = para.text.strip()\
@@ -53,17 +69,17 @@ def detecter_questions(doc):
         if not texte:
             continue
 
-        # Détection d'un en-tête de module
+        # 1) Détection d'un en-tête de module
         m_mod = pattern_module.match(texte)
         if m_mod:
             current_module = m_mod.group(1)
             continue
 
-        # Tentative de match pour question numérotée
+        # 2) Tentative de correspondance pour question numérotée
         m_num = pattern_num.match(texte)
         if m_num:
             num = m_num.group(1)
-            txt = m_num.group(2)
+            txt = m_num.group(2).strip()
             libelle = f"{num} - {txt}?"
             current_question = {
                 "index": i,
@@ -77,12 +93,12 @@ def detecter_questions(doc):
             questions.append(current_question)
             continue
 
-        # Tentative de match pour question non numérotée
+        # 3) Tentative de correspondance pour question non-numérotée
         m_non = pattern_non_num.match(texte)
         if m_non:
             compteur_non_numerote += 1
             num_fake = f"NN{compteur_non_numerote}"
-            txt = m_non.group(1)
+            txt = m_non.group(1).strip()
             libelle = f"{num_fake} - {txt}?"
             current_question = {
                 "index": i,
@@ -96,20 +112,20 @@ def detecter_questions(doc):
             questions.append(current_question)
             continue
 
-        # Si on est dans une question en cours, vérifier une réponse A–D
+        # 4) Si on est dans une question en cours, vérifier si le paragraphe est une réponse A–D
         if current_question:
-            # On cherche d'abord la lettre A–D, puis un tiret, puis le texte,
-            # enfin on repère soit '{{checkbox}}' soit '☑' pour marquer la bonne réponse.
-            m_ans = re.match(r'^([A-D])\s*[-\s–—.]+\s*(.*?)(?:\s*(\{\{checkbox\}\})|.*?(☑))?$', texte, re.IGNORECASE)
+            # On accepte soit '{{checkbox}}' soit le caractère '☑' pour marquer la bonne réponse
+            m_ans = re.match(
+                r'^([A-D])\s*[-\s–—.]+\s*(.*?)(?:\s*(\{\{checkbox\}\})|.*?(☑))?$', 
+                texte, 
+                re.IGNORECASE
+            )
             if m_ans:
                 lettre = m_ans.group(1).upper()
                 rep_txt = m_ans.group(2).strip()
-                # Détecter bonne réponse s’il y a '{{checkbox}}' ou '☑'
                 is_corr = bool(m_ans.group(3)) or bool(m_ans.group(4))
-                # Si '☑' dans rep_txt, on l’enlève pour n’avoir que le texte
-                rep_txt = rep_txt.replace("☑", "").strip()
-                # Retirer aussi '☐' si jamais présent
-                rep_txt = rep_txt.replace("☐", "").strip()
+                # Retirer les marques '☑' ou '☐' si elles figuraient dans le texte
+                rep_txt = rep_txt.replace("☑", "").replace("☐", "").strip()
                 current_question["reponses"].append({
                     "index": i,
                     "lettre": lettre,
@@ -121,15 +137,14 @@ def detecter_questions(doc):
                     current_question["correct_idx"] = len(current_question["reponses"]) - 1
                 continue
 
-    # Filtrer les questions valides (>=2 réponses et au moins une correcte)
+    # Filtrer les questions valides (au moins 2 réponses et au moins 1 marquée "correct")
     valid = []
     for q in questions:
         if q.get("correct_idx") is not None and len(q["reponses"]) >= 2:
             valid.append(q)
         else:
             st.warning(
-                f"Ignorée : {q['texte']} "
-                "(bonne réponse manquante ou <2 réponses)"
+                f"Ignorée : {q['texte']} (manque bonne réponse ou moins de 2 propositions)"
             )
     return valid
 
@@ -140,7 +155,7 @@ def parse_correct_answers(f):
         df = pd.read_excel(f)
         df = df.dropna(subset=['Numéro de la question','Réponse correcte'])
         df['Numéro de la question'] = df['Numéro de la question'].astype(str).str.strip()
-        df['Réponse correcte'] = df['Réponse correcte'].astype(str).str.strip().str.upper()
+        df['Réponse correcte']       = df['Réponse correcte'].astype(str).str.strip().str.upper()
         return dict(zip(df['Numéro de la question'], df['Réponse correcte']))
     except Exception as e:
         st.error(f"Erreur lecture corrections : {e}")
@@ -171,7 +186,6 @@ def generer_document(row, template_bytes):
             '{{ref_session}}': str(row['Référence Session']),
             '{{date_evaluation}}': str(row['Date Évaluation'])
         }
-
         for p in doc.paragraphs:
             remplacer_placeholders(p, repl_apprenant)
         for tbl in doc.tables:
@@ -183,18 +197,16 @@ def generer_document(row, template_bytes):
         # --- 2) Calculs par module ---
         total_par_module = {}
         correct_par_module = {}
-        # On compte le nombre total de questions par module
         for q in st.session_state.questions:
-            module_key = q['module']
-            total_par_module[module_key] = total_par_module.get(module_key, 0) + 1
-            correct_par_module[module_key] = 0
+            mod = q['module']
+            total_par_module[mod] = total_par_module.get(mod, 0) + 1
+            correct_par_module[mod] = 0
 
         corr = st.session_state.get('correct_answers', {})
         score_total = 0
 
-        # Pour chaque question, on mélange/fige et on compte le score
         for q in st.session_state.questions:
-            module_key = q['module']
+            mod = q['module']
             reps = q['reponses'].copy()
             q_num = q['numero']
 
@@ -215,8 +227,9 @@ def generer_document(row, template_bytes):
                     doc.paragraphs[idx].clear()
                     doc.paragraphs[idx].add_run(f"{r['lettre']} - {r['texte']} {box}")
 
+            # Si le fichier de corrections contient une réponse, on la compare
             if q_num in corr and reps[0]['lettre'].upper() == corr[q_num]:
-                correct_par_module[module_key] += 1
+                correct_par_module[mod] += 1
                 score_total += 1
 
         # --- 3) Mise à jour dynamique du tableau des résultats ---
@@ -226,7 +239,6 @@ def generer_document(row, template_bytes):
             for row in table.rows[1:]:
                 table._tbl.remove(row._tr)
 
-            # Ajouter une ligne par module
             for module_key, tot in total_par_module.items():
                 score_mod = correct_par_module.get(module_key, 0)
                 cells = table.add_row().cells
@@ -235,7 +247,6 @@ def generer_document(row, template_bytes):
                 cells[2].text = f"{tot} questions"
                 cells[3].text = ""
 
-            # Ajouter la ligne Total
             sum_tot = sum(total_par_module.values())
             cells = table.add_row().cells
             cells[0].text = "Total"
@@ -243,7 +254,7 @@ def generer_document(row, template_bytes):
             cells[2].text = f"{sum_tot} questions"
             cells[3].text = ""
 
-        # --- 4) Remplacement final des placeholders globaux (dans le cas où il en reste) ---
+        # --- 4) Remplacement final des placeholders globaux ---
         repl_final = {}
         resultat_global = calculer_resultat_final(score_total, sum(total_par_module.values()))
         repl_final['{{result_evaluation}}'] = resultat_global
@@ -298,7 +309,7 @@ if word_file and st.session_state.current_template != word_file.name:
                     st.write(f"**{idx}. [Module {q['module']}] {q['texte']}**")
                     for j, r in enumerate(q['reponses']):
                         mark = "✅" if j == q['correct_idx'] else "☐"
-                        st.write(f"{mark} {r['lettre']} - {r['texte']}")
+                        st.write(f"{mark} {r['lettre']} – {r['texte']}")
         else:
             st.warning("⚠️ Aucune question détectée. Vérifiez le format.")
     except Exception as e:
@@ -310,14 +321,14 @@ if corr_file:
     st.session_state.correct_answers = parse_correct_answers(corr_file)
     st.success(f"✅ {len(st.session_state.correct_answers)} corrections chargées")
 
-# Configuration questions figées
+# Configuration des questions figées
 if st.session_state.questions:
     st.markdown("### Configuration des questions")
     for q in st.session_state.questions:
         with st.expander(f"[Module {q['module']}] {q['texte']}", expanded=False):
             fig = st.checkbox("Figer cette question", key=f"figer_{q['index']}")
             if fig:
-                opts = [f"{r['lettre']} - {r['texte']}" for r in q['reponses']]
+                opts = [f"{r['lettre']} – {r['texte']}" for r in q['reponses']]
                 default = q['correct_idx'] or 0
                 choix = st.selectbox("Bonne réponse", opts, index=default, key=f"bonne_{q['index']}")
                 st.session_state.figees[q['index']] = True
@@ -374,7 +385,7 @@ if excel_file and st.session_state.questions and st.button("Générer les QCM"):
 # Légende résultats
 st.markdown("### Légende résultats")
 st.info("""
-- **Acquis** : ≥ 75%  
-- **En cours d'acquisition** : 50–75%  
-- **Non acquis** : < 50%
+- **Acquis** : ≥ 75 %  
+- **En cours d’acquisition** : 50 – 75 %  
+- **Non acquis** : < 50 %
 """)
