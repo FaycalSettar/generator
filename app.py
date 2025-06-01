@@ -10,6 +10,7 @@ import re
 st.set_page_config(page_title="Générateur de QCM", layout="centered")
 st.title("Générateur de QCM personnalisés")
 
+
 # — Fonctions utilitaires —
 
 def remplacer_placeholders(paragraph, replacements):
@@ -34,44 +35,52 @@ def remplacer_placeholders(paragraph, replacements):
 
 def detecter_questions(doc):
     """
-    Renvoie une liste de questions détectées dans `doc` (Document de python-docx). Chaque question est un dict :
+    Renvoie une liste de questions détectées dans `doc` (python-docx.Document).
+    Chaque question est un dict :
       {
-        "index": int,            # index du paragraphe dans doc.paragraphs où commence la question
+        "index": int,            # index du paragraphe où commence la question
         "texte": str,            # libellé “X.Y - Texte ?” ou séquentiel “n - Texte ?”
-        "numero": str,           # numéro “X.Y” si décelé, sinon numéro séquentiel "n"
+        "numero": str,           # numéro “X.Y” nettoyé ou séquentiel “n”
         "reponses": [            # liste de dicts pour chaque réponse
             {
               "index": int,      # index du paragraphe où se trouve cette réponse
-              "lettre": str,     # “A”|“B”|“C”|“D”
+              "lettre": str,     # “A”|"B"|"C"|"D"
               "texte": str,      # texte de la réponse
-              "correct": bool,   # True si la réponse porte {{checkbox}}
+              "correct": bool,   # True si {{checkbox}} est présent
               "original_text": str
             }, …
         ],
         "correct_idx": int,      # index dans “reponses” de la bonne réponse
         "original_text": str     # texte complet du paragraphe de la question
       }
-    Ne conserve que les questions ayant ≥2 réponses et au moins une réponse correcte.
+    Ne conserve que les questions ayant ≥ 2 réponses et au moins une réponse correcte.
     """
     questions = []
     current_question = None
 
-    # Regex pour question numérotée “X.Y – Texte ?”
-    pattern_num = re.compile(r'^\s*(\d+(?:\.\d+)*)\s*[-\s–—.]*\s*(.+?)\s*\?$')
-    # Regex pour question non-numérotée “- Texte ?”
+    pattern_num = re.compile(
+        r'^\s*'                    # début de ligne, espaces optionnels
+        r'(\d+(?:\s*\.\s*\d+)*)'   # capture “1.2” ou “1 . 2” ou “2. 10” ou “10.3.5”
+        r'\s*'                     # espaces optionnels
+        r'[-–—.]?'                 # un tiret ou un point (optionnel)
+        r'\s*'                     # espaces optionnels
+        r'(.+?)'                   # texte de la question
+        r'\s*\?$'                  # “?” en fin de ligne, espaces avant autorisés
+    )
     pattern_non_num = re.compile(r'^\s*[-–—]\s*(.+?)\s*\?$')
 
     for i, para in enumerate(doc.paragraphs):
-        texte_raw = para.text.strip()
-        if not texte_raw:
+        raw = para.text.strip()
+        if not raw:
             continue
-        texte = texte_raw.replace("\u00a0", " ").replace("–", "-").replace("—", "-")
+        texte = raw.replace("\u00a0", " ").replace("–", "-").replace("—", "-")
 
         # 1) Question numérotée
         m_num = pattern_num.match(texte)
         if m_num:
-            num = m_num.group(1)
-            txt = m_num.group(2)
+            num_brut = m_num.group(1)
+            num = re.sub(r'\s*\.\s*', '.', num_brut).strip()
+            txt = m_num.group(2).strip()
             libelle = f"{num} - {txt}?"
             current_question = {
                 "index": i,
@@ -79,7 +88,7 @@ def detecter_questions(doc):
                 "numero": num,
                 "reponses": [],
                 "correct_idx": None,
-                "original_text": texte_raw
+                "original_text": raw
             }
             questions.append(current_question)
             continue
@@ -87,22 +96,21 @@ def detecter_questions(doc):
         # 2) Question non-numérotée
         m_non = pattern_non_num.match(texte)
         if m_non:
-            # On attribue un numéro séquentiel : longueur actuelle de questions +1
-            seq_num = str(len(questions) + 1)
-            txt = m_non.group(1)
-            libelle = f"{seq_num} - {txt}?"
+            seq = str(len(questions) + 1)
+            txt = m_non.group(1).strip()
+            libelle = f"{seq} - {txt}?"
             current_question = {
                 "index": i,
                 "texte": libelle,
-                "numero": seq_num,
+                "numero": seq,
                 "reponses": [],
                 "correct_idx": None,
-                "original_text": texte_raw
+                "original_text": raw
             }
             questions.append(current_question)
             continue
 
-        # 3) Réponse possible (A–D)
+        # 3) Réponse A–D pour la question en cours
         if current_question:
             m_ans = re.match(r'^([A-D])\s*[-\s–—.]+\s*(.*?)\s*(\{\{checkbox\}\})?$', texte, re.IGNORECASE)
             if m_ans:
@@ -114,19 +122,15 @@ def detecter_questions(doc):
                     "lettre": lettre,
                     "texte": rep_txt,
                     "correct": is_corr,
-                    "original_text": texte_raw
+                    "original_text": raw
                 })
                 if is_corr:
                     current_question["correct_idx"] = len(current_question["reponses"]) - 1
 
-    # Filtrer les questions valides
-    valid = [
-        q for q in questions
-        if q["correct_idx"] is not None and len(q["reponses"]) >= 2
-    ]
+    valid = [q for q in questions if q["correct_idx"] is not None and len(q["reponses"]) >= 2]
     for q in questions:
         if q not in valid:
-            st.warning(f"Ignorée : {q['texte']} (réponses <2 ou aucune marquée)")
+            st.warning(f"Ignorée : {q['texte']} (moins de 2 réponses ou pas de {{checkbox}})")
     return valid
 
 
@@ -191,10 +195,8 @@ def generer_document(row, template_bytes):
             '{{ref_session}}': str(row['Référence Session']),
             '{{date_evaluation}}': date_eval
         }
-        # Appliquer dans les paragraphes
         for p in doc.paragraphs:
             remplacer_placeholders(p, repl_apprenant)
-        # Appliquer dans les cellules de table
         for tbl in doc.tables:
             for r in tbl.rows:
                 for c in r.cells:
@@ -207,10 +209,7 @@ def generer_document(row, template_bytes):
         correct_par_module = {}
         total_questions = len(questions)
 
-        # 2a) Initialisation des compteurs
         for q in questions:
-            # Si le numéro contient un point, module = partie avant le point
-            # Sinon, module = le numéro même (séquentiel ou entier)
             if '.' in q['numero']:
                 module_key = q['numero'].split('.')[0]
             else:
@@ -229,9 +228,8 @@ def generer_document(row, template_bytes):
                 module_key = q['numero']
 
             reps = q['reponses'].copy()
-            q_num = q['numero']  # ex. “2.3” ou “3”
+            q_num = q['numero']
 
-            # 3a) Placer la réponse (bonne en tête sauf si “figée”)
             if st.session_state['figees'].get(q['index'], False):
                 chosen_idx = st.session_state['reponses_correctes'].get(q['index'], q['correct_idx'])
                 bonne_rep = reps.pop(chosen_idx)
@@ -242,7 +240,6 @@ def generer_document(row, template_bytes):
                     reps.insert(0, bonne_rep)
                 random.shuffle(reps)
 
-            # 3b) Réécrire chaque paragraphe de réponse dans le Document
             for r in reps:
                 idx_para = r['index']
                 if idx_para < len(doc.paragraphs):
@@ -250,7 +247,6 @@ def generer_document(row, template_bytes):
                     doc.paragraphs[idx_para].clear()
                     doc.paragraphs[idx_para].add_run(f"{r['lettre']} - {r['texte']} {box}")
 
-            # 3c) Comparer la réponse affichée en tête avec la correction
             if q_num in corr:
                 generated_answer = reps[0]['lettre'].upper()
                 expected_answer = corr[q_num].upper()
@@ -265,12 +261,10 @@ def generer_document(row, template_bytes):
             sr[f'{{{{result_mod{module_key}}}}}'] = str(score_mod)
             sr[f'{{{{total_mod{module_key}}}}}']  = str(tot)
 
-        # Remplacements globaux
         sr['{{result_mod_total}}'] = str(score_total)
         sr['{{total_questions}}'] = str(total_questions)
         sr['{{result_evaluation}}'] = calculer_resultat_final(score_total, total_questions)
 
-        # Appliquer dans paragraphe + cellules
         for p in doc.paragraphs:
             remplacer_placeholders(p, sr)
         for tbl in doc.tables:
@@ -279,7 +273,6 @@ def generer_document(row, template_bytes):
                     for p in c.paragraphs:
                         remplacer_placeholders(p, sr)
 
-        # En-têtes et pieds de page
         for section in doc.sections:
             for header in section.header.paragraphs:
                 remplacer_placeholders(header, sr)
@@ -295,7 +288,6 @@ def generer_document(row, template_bytes):
 
 
 # — Interface Streamlit —
-
 
 with st.expander("Étape 1 : Importation des fichiers", expanded=True):
     excel_file = st.file_uploader(
@@ -327,7 +319,6 @@ if word_file and st.session_state['current_template'] != word_file.name:
         qs = detecter_questions(doc_sample)
         st.session_state['questions'] = qs
         st.session_state['current_template'] = word_file.name
-        # Réinitialiser les “figées” et les corrections manuelles
         st.session_state['figees'] = {}
         st.session_state['reponses_correctes'] = {}
 
@@ -358,7 +349,7 @@ if st.session_state['questions']:
     st.markdown("### Configuration des questions")
     for q in st.session_state['questions']:
         q_id = q['index']
-        q_num = q['numero']  # ex. “2.3” ou “3”
+        q_num = q['numero']
         key_base = f"{q_id}_{st.session_state['current_template']}"
         fig = st.checkbox(f"Figer question {q_num}", key=f"figer_{key_base}")
         if fig:
