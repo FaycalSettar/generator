@@ -399,7 +399,7 @@ if excel_file and word_file and st.session_state['questions']:
                         })
                         bytes_io = io.BytesIO()
                         doc_out.save(bytes_io)
-                        fn = f"QCM_{row['Prénom']}_{row['Nom']}.docx"
+                        fn = f"QCM_{row['Prénom']}_{row['Nom']}_{row["Référence Session"]}.docx"
                         zf.writestr(fn, bytes_io.getvalue())
                     progress.progress((i + 1) / total)
 
