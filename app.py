@@ -1,4 +1,3 @@
-
 import streamlit as st
 import pandas as pd
 from docx import Document
@@ -32,32 +31,39 @@ def remplacer_placeholders(paragraph, replacements):
                 run.text = run.text.replace(ns, value)
 
 def detecter_questions(doc):
+    """
+    Cette version de detecter_questions reconnaît :
+      1) les questions numérotées (1, 1.1, etc.) se terminant par un '?'
+      2) les questions non numérotées commençant par un tiret ('-','–','—') et finissant par '?'
+    Chaque question valide doit avoir au moins deux réponses A–D et une réponse marquée avec '{{checkbox}}'.
+    """
     questions = []
     current_question = None
+    compteur_non_numerote = 0
 
-    # accepte 1, 1.1, 1.1.2..., doit terminer par ?
-    question_pattern = re.compile(r'^\s*(\d+(?:\.\d+)*)\s*[-\s–—.]*\s*(.+?)\s*\?$')
-    # réponses de A à D
-    answer_pattern   = re.compile(r'^([A-D])\s*[-\s–—.]+\s*(.*?)(\{\{checkbox\}\})?$', re.IGNORECASE)
+    # 1) Questions numérotées, ex. "1.1 - Texte ?"
+    pattern_num = re.compile(r'^\s*(\d+(?:\.\d+)*)\s*[-\s–—.]*\s*(.+?)\s*\?$')
+    # 2) Questions non numérotées, ex. "- Texte ?"
+    pattern_non_num = re.compile(r'^\s*[-–—]\s*(.+?)\s*\?$')
 
     for i, para in enumerate(doc.paragraphs):
         texte = para.text.strip() \
-            .replace("\u00a0", " ") \
-            .replace("–", "-") \
-            .replace("—", "-")
+                    .replace("\u00a0", " ") \
+                    .replace("–", "-") \
+                    .replace("—", "-")
         if not texte:
             continue
 
-        # DEBUG : voir chaque paragraphe
-        st.write(f"PARA {i}: «{texte}»")
-
-        m_q = question_pattern.match(texte)
-        if m_q:
-            num = m_q.group(1)
-            txt = m_q.group(2)
+        # 1) Tentative de match pour question numérotée
+        m_num = pattern_num.match(texte)
+        if m_num:
+            num = m_num.group(1)
+            txt = m_num.group(2)
+            libelle = f"{num} - {txt}?"
             current_question = {
                 "index": i,
-                "texte": f"{num} - {txt}?",
+                "texte": libelle,
+                "numero": num,
                 "reponses": [],
                 "correct_idx": None,
                 "original_text": texte
@@ -65,12 +71,31 @@ def detecter_questions(doc):
             questions.append(current_question)
             continue
 
+        # 2) Tentative de match pour question non numérotée
+        m_non = pattern_non_num.match(texte)
+        if m_non:
+            compteur_non_numerote += 1
+            num_fake = f"NN{compteur_non_numerote}"
+            txt = m_non.group(1)
+            libelle = f"{num_fake} - {txt}?"
+            current_question = {
+                "index": i,
+                "texte": libelle,
+                "numero": num_fake,
+                "reponses": [],
+                "correct_idx": None,
+                "original_text": texte
+            }
+            questions.append(current_question)
+            continue
+
+        # 3) Si on est dans une question en cours, vérifier une réponse A–D
         if current_question:
-            m_r = answer_pattern.match(texte)
-            if m_r:
-                lettre  = m_r.group(1).upper()
-                rep_txt = m_r.group(2).strip()
-                is_corr = bool(m_r.group(3))
+            m_ans = re.match(r'^([A-D])\s*[-\s–—.]+\s*(.*?)\s*(\{\{checkbox\}\})?$', texte, re.IGNORECASE)
+            if m_ans:
+                lettre   = m_ans.group(1).upper()
+                rep_txt  = m_ans.group(2).strip()
+                is_corr  = bool(m_ans.group(3))
                 current_question["reponses"].append({
                     "index": i,
                     "lettre": lettre,
@@ -80,8 +105,9 @@ def detecter_questions(doc):
                 })
                 if is_corr:
                     current_question["correct_idx"] = len(current_question["reponses"]) - 1
+                continue
 
-    # filtrer et avertir
+    # Filtrer les questions valides (>=2 réponses et au moins une correcte)
     valid = []
     for q in questions:
         if q.get("correct_idx") is not None and len(q["reponses"]) >= 2:
@@ -106,8 +132,12 @@ def parse_correct_answers(f):
         st.error(f"Erreur lecture corrections : {e}")
         return {}
 
-def calculer_resultat_final(score, total_q=9):
-    pct = (score / total_q) * 100
+def calculer_resultat_final(score, total_q):
+    """
+    Renvoie le libellé ("Acquis", "En cours d'acquisition", "Non acquis")
+    en fonction du pourcentage score/total_q.
+    """
+    pct = (score / total_q) * 100 if total_q > 0 else 0
     if pct >= 75:
         return "Acquis"
     elif pct >= 50:
@@ -126,7 +156,7 @@ def generer_document(row, template_bytes):
             '{{ref_session}}': str(row['Référence Session']),
             '{{date_evaluation}}': str(row['Date Évaluation'])
         }
-        # appliquer remplacements
+        # appliquer remplacements (paragraphes + cellules)
         for p in doc.paragraphs:
             remplacer_placeholders(p, repl)
         for tbl in doc.tables:
@@ -135,38 +165,70 @@ def generer_document(row, template_bytes):
                     for p in c.paragraphs:
                         remplacer_placeholders(p, repl)
 
-        # traiter QCM
-        corr = st.session_state.get('correct_answers', {})
-        score = 0
+        # Initialisation des compteurs par module
+        total_par_module = {}
+        correct_par_module = {}
+        # On parcourt toutes les questions pour compter le total par module
         for q in st.session_state.questions:
+            # Déterminer la clé de module : partie avant le premier point si numéroté,
+            # sinon utiliser le numéro fictif (ex. "NN1").
+            if q['numero'].startswith("NN"):
+                module_key = q['numero']
+            else:
+                module_key = q['numero'].split('.')[0]
+            total_par_module[module_key] = total_par_module.get(module_key, 0) + 1
+            correct_par_module[module_key] = 0
+
+        corr = st.session_state.get('correct_answers', {})
+        score_total = 0
+
+        # Traiter chaque question pour mélanger/ranger les réponses et compter les bonnes
+        for q in st.session_state.questions:
+            module_key = q['numero'].split('.')[0] if not q['numero'].startswith("NN") else q['numero']
             reps = q['reponses'].copy()
-            q_num = q['texte'].split()[0]
-            # figé ou non
+            q_num = q['numero']  # clé pour chercher dans corr
+
+            # Si question "figée", on place la réponse choisie en premier
             if st.session_state.figees.get(q['index'], False):
                 bi = st.session_state.reponses_correctes.get(q['index'], q['correct_idx'])
-                cr = reps.pop(bi); reps.insert(0, cr)
+                cr = reps.pop(bi)
+                reps.insert(0, cr)
             else:
+                # sinon, on place d'abord la bonne réponse, puis on mélange le reste
                 if q['correct_idx'] is not None:
-                    cr = reps.pop(q['correct_idx']); reps.insert(0, cr)
+                    cr = reps.pop(q['correct_idx'])
+                    reps.insert(0, cr)
                 random.shuffle(reps)
-            # écrire réponses dans doc
+
+            # Écriture des réponses dans le document
             for r in reps:
                 idx = r['index']
                 if idx < len(doc.paragraphs):
                     box = "☑" if reps.index(r) == 0 else "☐"
                     doc.paragraphs[idx].clear()
                     doc.paragraphs[idx].add_run(f"{r['lettre']} - {r['texte']} {box}")
-            # scoring
-            if q_num in corr and reps[0]['lettre'].upper() == corr[q_num]:
-                score += 1
 
-        # résultat final
-        res = calculer_resultat_final(score)
-        sr = {
-            '{{result_mod1}}': str(score),
-            '{{result_mod_total}}': str(score),
-            '{{result_evaluation}}': res
-        }
+            # Comptage du score par module et total
+            if q_num in corr and reps[0]['lettre'].upper() == corr[q_num]:
+                correct_par_module[module_key] += 1
+                score_total += 1
+
+        # Préparation des remplacements finaux pour chaque module
+        sr = {}
+        # Pour chaque module, on remplace {{result_modX}} par le score brut
+        for module_key, tot in total_par_module.items():
+            score_mod = correct_par_module.get(module_key, 0)
+            sr[f'{{{{result_mod{module_key}}}}}'] = str(score_mod)
+            # Si le template prévoit un libellé d'évaluation par module, on peut ajouter :
+            # sr[f'{{{{result_mod{module_key}_eval}}}}'] =
+            #     calculer_resultat_final(score_mod, tot)
+
+        # Remplacement du score total et du résultat global
+        sr['{{result_mod_total}}'] = str(score_total)
+        resultat_global = calculer_resultat_final(score_total, sum(total_par_module.values()))
+        sr['{{result_evaluation}}'] = resultat_global
+
+        # Appliquer remplacements finaux (paragraphes + cellules)
         for p in doc.paragraphs:
             remplacer_placeholders(p, sr)
         for tbl in doc.tables:
@@ -175,7 +237,8 @@ def generer_document(row, template_bytes):
                     for p in c.paragraphs:
                         remplacer_placeholders(p, sr)
 
-        return doc, score, res
+        return doc, score_total, resultat_global
+
     except Exception as e:
         st.error(f"Erreur génération doc : {e}")
         st.error(traceback.format_exc())
