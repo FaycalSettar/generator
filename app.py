@@ -15,20 +15,27 @@ st.title("Générateur de QCM personnalisés")
 # — Fonctions utilitaires —
 
 def remplacer_placeholders(paragraph, replacements):
-    if not paragraph.text:
+    """
+    Reconstruit le texte complet du paragraphe, remplace tous les placeholders,
+    puis réaffecte paragraph.text pour écraser les runs existants.
+    Cela garantit que même si un placeholder est fractionné en plusieurs runs,
+    il sera tout de même remplacé.
+    """
+    texte = paragraph.text
+    if not texte:
         return
+    # On fait les remplacements successivement sur le texte complet
     for key, value in replacements.items():
-        for run in paragraph.runs:
-            if key in run.text:
-                run.text = run.text.replace(key, value)
-            # gestion des espaces insécables
-            ni = key.replace(" ", "\u00a0")
-            if ni in run.text:
-                run.text = run.text.replace(ni, value)
-            # gestion sans espaces
-            ns = key.replace(" ", "")
-            if ns in run.text:
-                run.text = run.text.replace(ns, value)
+        texte = texte.replace(key, value)
+        # On gère éventuellement le cas où le placeholder est écrit avec des espaces insécables
+        # mais dans notre cas, key = "{{prenom}}" etc. ne contient pas d'espaces, on peut omettre ce passage.
+        # Si besoin, on pourrait ajouter :
+        # ni = key.replace(" ", "\u00a0")
+        # texte = texte.replace(ni, value)
+        # ns = key.replace(" ", "")
+        # texte = texte.replace(ns, value)
+    # Écraser le paragraphe existant et écrire le texte remplacé
+    paragraph.text = texte
 
 def detecter_questions(doc):
     """
@@ -148,30 +155,32 @@ def calculer_resultat_final(score, total_q):
 def generer_document(row, template_bytes):
     try:
         doc = Document(io.BytesIO(template_bytes))
-        # placeholders apprenant
-        repl = {
+
+        # --- 1) Remplacement des placeholders apprénant ---
+        repl_apprenant = {
             '{{prenom}}': str(row['Prénom']),
             '{{nom}}': str(row['Nom']),
             '{{email}}': str(row['Email']),
             '{{ref_session}}': str(row['Référence Session']),
             '{{date_evaluation}}': str(row['Date Évaluation'])
         }
-        # appliquer remplacements (paragraphes + cellules)
+
+        # Appliquer d'abord aux paragraphes
         for p in doc.paragraphs:
-            remplacer_placeholders(p, repl)
+            remplacer_placeholders(p, repl_apprenant)
+        # Puis aux cellules des tableaux (au cas où des placeholders s'y trouvent aussi)
         for tbl in doc.tables:
             for r in tbl.rows:
                 for c in r.cells:
                     for p in c.paragraphs:
-                        remplacer_placeholders(p, repl)
+                        remplacer_placeholders(p, repl_apprenant)
 
-        # Initialisation des compteurs par module
+        # --- 2) Initialisation des compteurs par module ---
         total_par_module = {}
         correct_par_module = {}
-        # On parcourt toutes les questions pour compter le total par module
+        # Comptabiliser le nombre de questions par module
         for q in st.session_state.questions:
-            # Déterminer la clé de module : partie avant le premier point si numéroté,
-            # sinon utiliser le numéro fictif (ex. "NN1").
+            # Clé module = partie avant le premier point si numéroté, sinon numéro fictif "NNx"
             if q['numero'].startswith("NN"):
                 module_key = q['numero']
             else:
@@ -182,25 +191,25 @@ def generer_document(row, template_bytes):
         corr = st.session_state.get('correct_answers', {})
         score_total = 0
 
-        # Traiter chaque question pour mélanger/ranger les réponses et compter les bonnes
+        # --- 3) Traitement de chaque question pour mélange / rangement et scoring ---
         for q in st.session_state.questions:
             module_key = q['numero'].split('.')[0] if not q['numero'].startswith("NN") else q['numero']
             reps = q['reponses'].copy()
-            q_num = q['numero']  # clé pour chercher dans corr
+            q_num = q['numero']
 
-            # Si question "figée", on place la réponse choisie en premier
+            # Si question figée, on place la réponse choisie en premier
             if st.session_state.figees.get(q['index'], False):
                 bi = st.session_state.reponses_correctes.get(q['index'], q['correct_idx'])
                 cr = reps.pop(bi)
                 reps.insert(0, cr)
             else:
-                # sinon, on place d'abord la bonne réponse, puis on mélange le reste
+                # Sinon, on place d’abord la bonne réponse, puis on mélange le reste
                 if q['correct_idx'] is not None:
                     cr = reps.pop(q['correct_idx'])
                     reps.insert(0, cr)
                 random.shuffle(reps)
 
-            # Écriture des réponses dans le document
+            # Écrire les réponses dans le document (on réécrit chaque paragraphe original)
             for r in reps:
                 idx = r['index']
                 if idx < len(doc.paragraphs):
@@ -213,29 +222,29 @@ def generer_document(row, template_bytes):
                 correct_par_module[module_key] += 1
                 score_total += 1
 
-        # Préparation des remplacements finaux pour chaque module
-        sr = {}
-        # Pour chaque module, on remplace {{result_modX}} par le score brut
+        # --- 4) Préparer les remplacements finaux containers de résultats ---
+        repl_resultats = {}
+        # Pour chaque module, remplacer {{result_modX}} par le score brut
         for module_key, tot in total_par_module.items():
             score_mod = correct_par_module.get(module_key, 0)
-            sr[f'{{{{result_mod{module_key}}}}}'] = str(score_mod)
-            # Si le template prévoit un libellé d'évaluation par module, on peut ajouter :
-            # sr[f'{{{{result_mod{module_key}_eval}}}}'] =
+            repl_resultats[f'{{{{result_mod{module_key}}}}}'] = str(score_mod)
+            # Si vous souhaitez aussi un libellé par module, vous pourriez faire :
+            # repl_resultats[f'{{{{result_mod{module_key}_eval}}}}'] = \
             #     calculer_resultat_final(score_mod, tot)
 
         # Remplacement du score total et du résultat global
-        sr['{{result_mod_total}}'] = str(score_total)
+        repl_resultats['{{result_mod_total}}'] = str(score_total)
         resultat_global = calculer_resultat_final(score_total, sum(total_par_module.values()))
-        sr['{{result_evaluation}}'] = resultat_global
+        repl_resultats['{{result_evaluation}}'] = resultat_global
 
-        # Appliquer remplacements finaux (paragraphes + cellules)
+        # Appliquer ces remplacements finaux (paragraphes + tableaux)
         for p in doc.paragraphs:
-            remplacer_placeholders(p, sr)
+            remplacer_placeholders(p, repl_resultats)
         for tbl in doc.tables:
             for r in tbl.rows:
                 for c in r.cells:
                     for p in c.paragraphs:
-                        remplacer_placeholders(p, sr)
+                        remplacer_placeholders(p, repl_resultats)
 
         return doc, score_total, resultat_global
 
@@ -254,7 +263,7 @@ with st.expander("Étape 1 : Importation des fichiers", expanded=True):
     word_file  = st.file_uploader("Modèle Word .docx", type="docx")
     corr_file  = st.file_uploader("Réponses correctes (xlsx)", type="xlsx")
 
-# initialiser session
+# Initialisation de la session
 for key in ('questions','figees','reponses_correctes'):
     if key not in st.session_state:
         st.session_state[key] = [] if key=='questions' else {}
@@ -263,7 +272,7 @@ if 'current_template' not in st.session_state:
 if 'doc_template' not in st.session_state:
     st.session_state.doc_template = None
 
-# charger Word & détecter questions
+# Charger le document Word & détecter les questions
 if word_file and st.session_state.current_template != word_file.name:
     try:
         data = word_file.getvalue()
@@ -286,12 +295,12 @@ if word_file and st.session_state.current_template != word_file.name:
         st.error(f"Erreur chargement Word : {e}")
         st.error(traceback.format_exc())
 
-# charger corrections
+# Charger le fichier de corrections, s’il existe
 if corr_file:
     st.session_state.correct_answers = parse_correct_answers(corr_file)
     st.success(f"✅ {len(st.session_state.correct_answers)} corrections chargées")
 
-# configuration questions figées
+# Configuration des questions figées
 if st.session_state.questions:
     st.markdown("### Configuration des questions")
     for q in st.session_state.questions:
@@ -304,7 +313,7 @@ if st.session_state.questions:
                 st.session_state.figees[q['index']] = True
                 st.session_state.reponses_correctes[q['index']] = opts.index(choix)
 
-# génération QCM
+# Génération des QCM
 if excel_file and st.session_state.questions and st.button("Générer les QCM"):
     try:
         df = pd.read_excel(excel_file)
@@ -314,7 +323,7 @@ if excel_file and st.session_state.questions and st.button("Générer les QCM"):
             st.error(f"Colonnes manquantes : {miss}")
             st.stop()
 
-        buf  = io.BytesIO()
+        buf   = io.BytesIO()
         recap = []
         with ZipFile(buf, 'w') as zf:
             prog  = st.progress(0)
@@ -329,15 +338,15 @@ if excel_file and st.session_state.questions and st.button("Générer les QCM"):
                         "Score": sc,
                         "Résultat": re
                     })
-                    fn = f"QCM_{row['Prénom']}_{row['Nom']}.docx"
+                    fn  = f"QCM_{row['Prénom']}_{row['Nom']}.docx"
                     tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.docx')
                     doc_out.save(tmp.name)
                     zf.write(tmp.name, fn)
                 prog.progress((i+1)/total)
 
             if recap:
-                df_r = pd.DataFrame(recap)
-                tmp2 = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
+                df_r  = pd.DataFrame(recap)
+                tmp2  = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
                 df_r.to_excel(tmp2.name, index=False)
                 zf.write(tmp2.name, "Recapitulatif_QCM.xlsx")
 
@@ -352,7 +361,7 @@ if excel_file and st.session_state.questions and st.button("Générer les QCM"):
         st.error(f"ERREUR critique : {e}")
         st.error(traceback.format_exc())
 
-# légende résultats
+# Légende des résultats
 st.markdown("### Légende résultats")
 st.info("""
 - **Acquis** : ≥ 75%  
