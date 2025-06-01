@@ -20,9 +20,7 @@ def remplacer_placeholders(paragraph, replacements):
     if not paragraph.text:
         return
 
-    original_text = paragraph.text
     for key, value in replacements.items():
-        # Trois variantes : clé “normale”, clé avec espace insécable, clé sans espaces
         ni = key.replace(" ", "\u00a0")
         ns = key.replace(" ", "")
         for run in paragraph.runs:
@@ -39,8 +37,8 @@ def detecter_questions(doc):
     Renvoie une liste de questions détectées dans `doc` (Document de python-docx). Chaque question est un dict :
       {
         "index": int,            # index du paragraphe dans doc.paragraphs où commence la question
-        "texte": str,            # libellé “X.Y - Texte ?”
-        "numero": str,           # numéro “X.Y” ou “NNn” si non-numérotée
+        "texte": str,            # libellé “X.Y - Texte ?” ou séquentiel “n - Texte ?”
+        "numero": str,           # numéro “X.Y” si décelé, sinon numéro séquentiel "n"
         "reponses": [            # liste de dicts pour chaque réponse
             {
               "index": int,      # index du paragraphe où se trouve cette réponse
@@ -57,7 +55,6 @@ def detecter_questions(doc):
     """
     questions = []
     current_question = None
-    compteur_non_numerote = 0
 
     # Regex pour question numérotée “X.Y – Texte ?”
     pattern_num = re.compile(r'^\s*(\d+(?:\.\d+)*)\s*[-\s–—.]*\s*(.+?)\s*\?$')
@@ -68,7 +65,6 @@ def detecter_questions(doc):
         texte_raw = para.text.strip()
         if not texte_raw:
             continue
-        # Normalisation minimale pour la détection
         texte = texte_raw.replace("\u00a0", " ").replace("–", "-").replace("—", "-")
 
         # 1) Question numérotée
@@ -88,17 +84,17 @@ def detecter_questions(doc):
             questions.append(current_question)
             continue
 
-        # 2) Question non-numerotée
+        # 2) Question non-numérotée
         m_non = pattern_non_num.match(texte)
         if m_non:
-            compteur_non_numerote += 1
-            num_fake = f"NN{compteur_non_numerote}"
+            # On attribue un numéro séquentiel : longueur actuelle de questions +1
+            seq_num = str(len(questions) + 1)
             txt = m_non.group(1)
-            libelle = f"{num_fake} - {txt}?"
+            libelle = f"{seq_num} - {txt}?"
             current_question = {
                 "index": i,
                 "texte": libelle,
-                "numero": num_fake,
+                "numero": seq_num,
                 "reponses": [],
                 "correct_idx": None,
                 "original_text": texte_raw
@@ -137,7 +133,7 @@ def detecter_questions(doc):
 def parse_correct_answers(f):
     """
     Lit un fichier Excel comportant au moins deux colonnes :
-      - 'Numéro de la question' (ex. '1.1', '2.3', 'NN1', etc.)
+      - 'Numéro de la question' (ex. '1.1', '2.3', '3', etc.)
       - 'Réponse correcte'      (ex. 'A', 'B', 'C' ou 'D')
     Retourne dict {question_num: lettre_correcte}.
     """
@@ -206,17 +202,19 @@ def generer_document(row, template_bytes):
                         remplacer_placeholders(p, repl_apprenant)
 
         # --- 2) Préparer le comptage par module ---
-        questions = st.session_state.questions
+        questions = st.session_state['questions']
         questions_par_module = {}
         correct_par_module = {}
         total_questions = len(questions)
 
         # 2a) Initialisation des compteurs
         for q in questions:
-            if q['numero'].startswith("NN"):
-                module_key = q['numero']
-            else:
+            # Si le numéro contient un point, module = partie avant le point
+            # Sinon, module = le numéro même (séquentiel ou entier)
+            if '.' in q['numero']:
                 module_key = q['numero'].split('.')[0]
+            else:
+                module_key = q['numero']
             questions_par_module[module_key] = questions_par_module.get(module_key, 0) + 1
             correct_par_module.setdefault(module_key, 0)
 
@@ -225,21 +223,20 @@ def generer_document(row, template_bytes):
 
         # --- 3) Traiter chaque question (placements et score) ---
         for q in questions:
-            if q['numero'].startswith("NN"):
-                module_key = q['numero']
-            else:
+            if '.' in q['numero']:
                 module_key = q['numero'].split('.')[0]
+            else:
+                module_key = q['numero']
 
             reps = q['reponses'].copy()
-            q_num = q['numero']  # ex. “2.3” ou “NN1”
+            q_num = q['numero']  # ex. “2.3” ou “3”
 
             # 3a) Placer la réponse (bonne en tête sauf si “figée”)
-            if st.session_state.figees.get(q['index'], False):
-                chosen_idx = st.session_state.reponses_correctes.get(q['index'], q['correct_idx'])
+            if st.session_state['figees'].get(q['index'], False):
+                chosen_idx = st.session_state['reponses_correctes'].get(q['index'], q['correct_idx'])
                 bonne_rep = reps.pop(chosen_idx)
                 reps.insert(0, bonne_rep)
             else:
-                # Retirer la bonne réponse et la mettre en premier, puis mélanger les autres
                 if q['correct_idx'] is not None:
                     bonne_rep = reps.pop(q['correct_idx'])
                     reps.insert(0, bonne_rep)
@@ -361,8 +358,7 @@ if st.session_state['questions']:
     st.markdown("### Configuration des questions")
     for q in st.session_state['questions']:
         q_id = q['index']
-        q_num = q['numero']  # ex. “2.3” ou “NN1”
-        # Chaque checkbox porte une clé unique (incluant le nom du template pour éviter conflit si on recharge un Word différent)
+        q_num = q['numero']  # ex. “2.3” ou “3”
         key_base = f"{q_id}_{st.session_state['current_template']}"
         fig = st.checkbox(f"Figer question {q_num}", key=f"figer_{key_base}")
         if fig:
