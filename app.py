@@ -6,6 +6,7 @@ import io
 import traceback
 from zipfile import ZipFile
 import re
+import unicodedata
 
 st.set_page_config(page_title="Générateur de QCM", layout="centered")
 st.title("Générateur de QCM personnalisés")
@@ -13,24 +14,30 @@ st.title("Générateur de QCM personnalisés")
 
 # — Fonctions utilitaires —
 
-def remplacer_placeholders(paragraph, replacements):
+def remplacer_placeholder_dans_paragraphe(paragraph, replacements):
     """
-    Remplace dans un paragraphe Word tous les placeholders contenus dans `replacements`,
-    en gérant les espaces normaux, insécables et l’absence d’espace.
+    Remplace dans tout le texte du paragraphe (paragraph.text)
+    les placeholders définis dans `replacements`, même s'ils sont
+    fragmentés en plusieurs runs au sein d'un même paragraphe.
     """
     if not paragraph.text:
         return
 
+    # Texte brut du paragraphe
+    texte_complet = paragraph.text
     for key, value in replacements.items():
+        # Trois formes : espace normal, espace insécable, ou pas d'espace
         ni = key.replace(" ", "\u00a0")
         ns = key.replace(" ", "")
-        for run in paragraph.runs:
-            if key in run.text:
-                run.text = run.text.replace(key, value)
-            if ni in run.text:
-                run.text = run.text.replace(ni, value)
-            if ns in run.text:
-                run.text = run.text.replace(ns, value)
+        texte_complet = texte_complet.replace(key, value)
+        texte_complet = texte_complet.replace(ni, value)
+        texte_complet = texte_complet.replace(ns, value)
+
+    # Supprime tous les runs existants
+    for run in paragraph.runs:
+        run.text = ""
+    # Insère un nouveau run avec le texte modifié
+    paragraph.add_run(texte_complet)
 
 
 def detecter_questions(doc):
@@ -39,7 +46,7 @@ def detecter_questions(doc):
     Chaque question est un dict :
       {
         "index": int,            # index du paragraphe où commence la question
-        "texte": str,            # libellé “X.Y - Texte ?” ou séquentiel “n - Texte ?”
+        "texte": str,            # libellé “X.Y - Texte ?” ou “n - Texte ?”
         "numero": str,           # numéro “X.Y” nettoyé ou séquentiel “n”
         "reponses": [            # liste de dicts pour chaque réponse
             {
@@ -60,12 +67,12 @@ def detecter_questions(doc):
 
     pattern_num = re.compile(
         r'^\s*'                    # début de ligne, espaces optionnels
-        r'(\d+(?:\s*\.\s*\d+)*)'   # capture “1.2” ou “1 . 2” ou “2. 10” ou “10.3.5”
+        r'(\d+(?:\s*\.\s*\d+)*)'   # capture “1.2” ou “1 . 2” etc.
         r'\s*'                     # espaces optionnels
-        r'[-–—.]?'                 # un tiret ou un point (optionnel)
+        r'[-–—.]?'                 # un tiret (court, long) ou un point (optionnel)
         r'\s*'                     # espaces optionnels
         r'(.+?)'                   # texte de la question
-        r'\s*\?$'                  # “?” en fin de ligne, espaces avant autorisés
+        r'\s*\?$'                  # “?” en fin de ligne
     )
     pattern_non_num = re.compile(r'^\s*[-–—]\s*(.+?)\s*\?$')
 
@@ -144,10 +151,18 @@ def parse_correct_answers(f):
     if f is None:
         return {}
     try:
-        df = pd.read_excel(f)
+        # Forcer la colonne "Numéro de la question" en texte
+        df = pd.read_excel(f, dtype={'Numéro de la question': str})
         df = df.dropna(subset=['Numéro de la question', 'Réponse correcte'])
         df['Numéro de la question'] = df['Numéro de la question'].astype(str).str.strip()
         df['Réponse correcte'] = df['Réponse correcte'].astype(str).str.strip().str.upper()
+
+        # Vérifier que les réponses correctes ne contiennent que A, B, C ou D
+        if not df['Réponse correcte'].isin(['A', 'B', 'C', 'D']).all():
+            mauvaises_valeurs = df.loc[~df['Réponse correcte'].isin(['A', 'B', 'C', 'D']), 'Réponse correcte'].unique()
+            st.error(f"Valeurs invalides dans 'Réponse correcte' : {mauvaises_valeurs}")
+            return {}
+
         return dict(zip(df['Numéro de la question'], df['Réponse correcte']))
     except Exception as e:
         st.error(f"Erreur lecture corrections : {e}")
@@ -172,6 +187,17 @@ def calculer_resultat_final(score, total_q):
         return "Non acquis"
 
 
+def slugify(value):
+    """
+    Normalise une chaîne pour la rendre sûre dans un nom de fichier :
+    suppression des accents, conversion en ASCII, et remplacement des espaces par des underscores.
+    """
+    value = unicodedata.normalize('NFKD', str(value))
+    value = value.encode('ascii', 'ignore').decode('ascii')
+    value = re.sub(r'[^\w\s-]', '', value).strip().lower()
+    return re.sub(r'[-\s]+', '_', value)
+
+
 def generer_document(row, template_bytes):
     """
     Génère un Document .docx pour un apprenant donné (ligne `row` de l'Excel).
@@ -183,10 +209,12 @@ def generer_document(row, template_bytes):
 
         # --- 1) Remplacement des placeholders “apprenant” ---
         date_eval = row['Date Évaluation']
-        if isinstance(date_eval, (pd.Timestamp,)):
-            date_eval = date_eval.strftime("%d/%m/%Y")
-        else:
+        try:
+            date_eval_dt = pd.to_datetime(date_eval, dayfirst=True)
+            date_eval = date_eval_dt.strftime("%d/%m/%Y")
+        except Exception:
             date_eval = str(date_eval)
+            st.warning(f"Format inattendu pour la date d’évaluation de {row['Prénom']} {row['Nom']} : « {date_eval} »")
 
         repl_apprenant = {
             '{{prenom}}': str(row['Prénom']),
@@ -195,13 +223,14 @@ def generer_document(row, template_bytes):
             '{{ref_session}}': str(row['Référence Session']),
             '{{date_evaluation}}': date_eval
         }
+        # Remplacer dans tous les paragraphes et tables
         for p in doc.paragraphs:
-            remplacer_placeholders(p, repl_apprenant)
+            remplacer_placeholder_dans_paragraphe(p, repl_apprenant)
         for tbl in doc.tables:
             for r in tbl.rows:
                 for c in r.cells:
                     for p in c.paragraphs:
-                        remplacer_placeholders(p, repl_apprenant)
+                        remplacer_placeholder_dans_paragraphe(p, repl_apprenant)
 
         # --- 2) Préparer le comptage par module ---
         questions = st.session_state['questions']
@@ -236,9 +265,12 @@ def generer_document(row, template_bytes):
                 reps.insert(0, bonne_rep)
             else:
                 if q['correct_idx'] is not None:
+                    # Extraire la bonne réponse
                     bonne_rep = reps.pop(q['correct_idx'])
-                    reps.insert(0, bonne_rep)
-                random.shuffle(reps)
+                    # Mélanger uniquement les autres réponses
+                    autres_reps = reps[:]
+                    random.shuffle(autres_reps)
+                    reps = [bonne_rep] + autres_reps
 
             for r in reps:
                 idx_para = r['index']
@@ -247,6 +279,7 @@ def generer_document(row, template_bytes):
                     doc.paragraphs[idx_para].clear()
                     doc.paragraphs[idx_para].add_run(f"{r['lettre']} - {r['texte']} {box}")
 
+            # Calcul du score si une correction est connue
             if q_num in corr:
                 generated_answer = reps[0]['lettre'].upper()
                 expected_answer = corr[q_num].upper()
@@ -259,25 +292,25 @@ def generer_document(row, template_bytes):
         for module_key, tot in questions_par_module.items():
             score_mod = correct_par_module.get(module_key, 0)
             sr[f'{{{{result_mod{module_key}}}}}'] = str(score_mod)
-            sr[f'{{{{total_mod{module_key}}}}}']  = str(tot)
+            sr[f'{{{{total_mod{module_key}}}}}'] = str(tot)
 
         sr['{{result_mod_total}}'] = str(score_total)
         sr['{{total_questions}}'] = str(total_questions)
         sr['{{result_evaluation}}'] = calculer_resultat_final(score_total, total_questions)
 
+        # Remplacer dans tout le document (paragraphes, tables, en-têtes, pieds de page)
         for p in doc.paragraphs:
-            remplacer_placeholders(p, sr)
+            remplacer_placeholder_dans_paragraphe(p, sr)
         for tbl in doc.tables:
             for r in tbl.rows:
                 for c in r.cells:
                     for p in c.paragraphs:
-                        remplacer_placeholders(p, sr)
-
+                        remplacer_placeholder_dans_paragraphe(p, sr)
         for section in doc.sections:
-            for header in section.header.paragraphs:
-                remplacer_placeholders(header, sr)
-            for footer in section.footer.paragraphs:
-                remplacer_placeholders(footer, sr)
+            for header_para in section.header.paragraphs:
+                remplacer_placeholder_dans_paragraphe(header_para, sr)
+            for footer_para in section.footer.paragraphs:
+                remplacer_placeholder_dans_paragraphe(footer_para, sr)
 
         return doc, score_total, sr['{{result_evaluation}}'], total_questions
 
@@ -399,7 +432,7 @@ if excel_file and word_file and st.session_state['questions']:
                         })
                         bytes_io = io.BytesIO()
                         doc_out.save(bytes_io)
-                        fn = f"QCM_{row['Prénom']}_{row['Nom']}_{row['Référence Session']}.docx"
+                        fn = f"QCM_{slugify(row['Prénom'])}_{slugify(row['Nom'])}_{slugify(row['Référence Session'])}.docx"
                         zf.writestr(fn, bytes_io.getvalue())
                     progress.progress((i + 1) / total)
 
