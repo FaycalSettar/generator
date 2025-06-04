@@ -10,28 +10,58 @@ import re
 st.set_page_config(page_title="Générateur de QCM", layout="centered")
 st.title("Générateur de QCM personnalisés")
 
-
-# — Fonctions utilitaires —
+# — Fonctions utilitaires améliorées —
 
 def remplacer_placeholders(paragraph, replacements):
-    """
-    Remplace dans un paragraphe Word tous les placeholders contenus dans `replacements`,
-    en gérant les espaces normaux, insécables et l’absence d’espace.
-    """
+    """Version améliorée gérant les placeholders fragmentés et conservant le style"""
     if not paragraph.text:
         return
+   
+    # 1. Fusionner tous les runs du paragraphe
+    full_text = ''.join(run.text for run in paragraph.runs)
+   
+    # 2. Effectuer tous les remplacements sur le texte complet
+    for placeholder, valeur in replacements.items():
+        # Variantes d'espaces pour le placeholder
+        variants = [
+            placeholder,
+            placeholder.replace(" ", "\u00a0"),  # Espace insécable
+            placeholder.replace(" ", "")         # Sans espace
+        ]
+       
+        for variant in variants:
+            if variant in full_text:
+                full_text = full_text.replace(variant, valeur)
+   
+    # 3. Réinitialiser le paragraphe en conservant le style
+    paragraph.clear()
+   
+    # Trouver le style du premier run existant ou utiliser Normal
+    base_style = paragraph.runs[0].style if paragraph.runs else 'Normal'
+    new_run = paragraph.add_run(full_text)
+    new_run.style = base_style
 
-    for key, value in replacements.items():
-        ni = key.replace(" ", "\u00a0")
-        ns = key.replace(" ", "")
-        for run in paragraph.runs:
-            if key in run.text:
-                run.text = run.text.replace(key, value)
-            if ni in run.text:
-                run.text = run.text.replace(ni, value)
-            if ns in run.text:
-                run.text = run.text.replace(ns, value)
-
+def process_headers_footers(section, replacements):
+    """Traite récursivement tous les éléments des en-têtes/pieds de page"""
+    # Traiter les paragraphes
+    for header in section.header.paragraphs:
+        remplacer_placeholders(header, replacements)
+   
+    for footer in section.footer.paragraphs:
+        remplacer_placeholders(footer, replacements)
+   
+    # Traiter les tableaux
+    for table in section.header.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    remplacer_placeholders(paragraph, replacements)
+   
+    for table in section.footer.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for paragraph in cell.paragraphs:
+                    remplacer_placeholders(paragraph, replacements)
 
 def detecter_questions(doc):
     """
@@ -133,7 +163,6 @@ def detecter_questions(doc):
             st.warning(f"Ignorée : {q['texte']} (moins de 2 réponses ou pas de {{checkbox}})")
     return valid
 
-
 def parse_correct_answers(f):
     """
     Lit un fichier Excel comportant au moins deux colonnes :
@@ -153,7 +182,6 @@ def parse_correct_answers(f):
         st.error(f"Erreur lecture corrections : {e}")
         return {}
 
-
 def calculer_resultat_final(score, total_q):
     """
     Renvoie l'étiquette selon le pourcentage (score/total_q) * 100 :
@@ -170,7 +198,6 @@ def calculer_resultat_final(score, total_q):
         return "En cours d’acquisition"
     else:
         return "Non acquis"
-
 
 def generer_document(row, template_bytes):
     """
@@ -195,13 +222,21 @@ def generer_document(row, template_bytes):
             '{{ref_session}}': str(row['Référence Session']),
             '{{date_evaluation}}': date_eval
         }
+       
+        # Remplacer dans les paragraphes principaux
         for p in doc.paragraphs:
             remplacer_placeholders(p, repl_apprenant)
+       
+        # Remplacer dans les tableaux
         for tbl in doc.tables:
             for r in tbl.rows:
                 for c in r.cells:
                     for p in c.paragraphs:
                         remplacer_placeholders(p, repl_apprenant)
+       
+        # Remplacer dans les en-têtes/pieds de page
+        for section in doc.sections:
+            process_headers_footers(section, repl_apprenant)
 
         # --- 2) Préparer le comptage par module ---
         questions = st.session_state['questions']
@@ -243,9 +278,16 @@ def generer_document(row, template_bytes):
             for r in reps:
                 idx_para = r['index']
                 if idx_para < len(doc.paragraphs):
+                    p = doc.paragraphs[idx_para]
                     box = "☑" if reps.index(r) == 0 else "☐"
-                    doc.paragraphs[idx_para].clear()
-                    doc.paragraphs[idx_para].add_run(f"{r['lettre']} - {r['texte']} {box}")
+                   
+                    # Sauvegarder le style
+                    style = p.style
+                   
+                    # Effacer et recréer le contenu
+                    p.clear()
+                    new_run = p.add_run(f"{r['lettre']} - {r['texte']} {box}")
+                    p.style = style
 
             if q_num in corr:
                 generated_answer = reps[0]['lettre'].upper()
@@ -265,6 +307,7 @@ def generer_document(row, template_bytes):
         sr['{{total_questions}}'] = str(total_questions)
         sr['{{result_evaluation}}'] = calculer_resultat_final(score_total, total_questions)
 
+        # Appliquer les remplacements des résultats
         for p in doc.paragraphs:
             remplacer_placeholders(p, sr)
         for tbl in doc.tables:
@@ -272,12 +315,8 @@ def generer_document(row, template_bytes):
                 for c in r.cells:
                     for p in c.paragraphs:
                         remplacer_placeholders(p, sr)
-
         for section in doc.sections:
-            for header in section.header.paragraphs:
-                remplacer_placeholders(header, sr)
-            for footer in section.footer.paragraphs:
-                remplacer_placeholders(footer, sr)
+            process_headers_footers(section, sr)
 
         return doc, score_total, sr['{{result_evaluation}}'], total_questions
 
@@ -285,7 +324,6 @@ def generer_document(row, template_bytes):
         st.error(f"Erreur génération doc : {e}")
         st.error(traceback.format_exc())
         return None, 0, "Erreur", 0
-
 
 # — Interface Streamlit —
 
@@ -296,7 +334,6 @@ with st.expander("Étape 1 : Importation des fichiers", expanded=True):
     )
     word_file = st.file_uploader("Modèle Word (.docx)", type="docx")
     corr_file = st.file_uploader("Réponses correctes (Excel .xlsx)", type="xlsx")
-
 
 # Initialiser le session_state si nécessaire
 if 'questions' not in st.session_state:
@@ -309,7 +346,6 @@ if 'current_template' not in st.session_state:
     st.session_state['current_template'] = None
 if 'correct_answers' not in st.session_state:
     st.session_state['correct_answers'] = {}
-
 
 # 1) Charger le modèle Word et détecter les questions
 if word_file and st.session_state['current_template'] != word_file.name:
@@ -336,13 +372,11 @@ if word_file and st.session_state['current_template'] != word_file.name:
         st.error(f"Erreur chargement Word : {e}")
         st.error(traceback.format_exc())
 
-
 # 2) Charger le fichier des corrections
 if corr_file:
     ca = parse_correct_answers(corr_file)
     st.session_state['correct_answers'] = ca
     st.success(f"✅ {len(ca)} corrections chargées")
-
 
 # 3) Configuration des questions “figées”
 if st.session_state['questions']:
@@ -366,7 +400,6 @@ if st.session_state['questions']:
         else:
             st.session_state['figees'].pop(q_id, None)
             st.session_state['reponses_correctes'].pop(q_id, None)
-
 
 # 4) Génération des QCM
 if excel_file and word_file and st.session_state['questions']:
@@ -426,7 +459,6 @@ if excel_file and word_file and st.session_state['questions']:
         except Exception as e:
             st.error(f"ERREUR critique : {e}")
             st.error(traceback.format_exc())
-
 
 # 5) Légende des résultats
 st.markdown("### Légende résultats")
