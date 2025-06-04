@@ -10,16 +10,16 @@ import re
 st.set_page_config(page_title="Générateur de QCM", layout="centered")
 st.title("Générateur de QCM personnalisés")
 
-# — Fonctions utilitaires améliorées —
+# — Fonctions utilitaires corrigées —
 
 def remplacer_placeholders(paragraph, replacements):
-    """Version améliorée gérant les placeholders fragmentés et conservant le style"""
+    """Version corrigée gérant correctement les styles de caractères"""
     if not paragraph.text:
         return
-   
-    # 1. Fusionner tous les runs du paragraphe
+    
+    # 1. Fusionner tous les runs du paragraphe en conservant les styles
     full_text = ''.join(run.text for run in paragraph.runs)
-   
+    
     # 2. Effectuer tous les remplacements sur le texte complet
     for placeholder, valeur in replacements.items():
         # Variantes d'espaces pour le placeholder
@@ -28,35 +28,59 @@ def remplacer_placeholders(paragraph, replacements):
             placeholder.replace(" ", "\u00a0"),  # Espace insécable
             placeholder.replace(" ", "")         # Sans espace
         ]
-       
+        
         for variant in variants:
             if variant in full_text:
                 full_text = full_text.replace(variant, valeur)
-   
-    # 3. Réinitialiser le paragraphe en conservant le style
+    
+    # 3. Réinitialiser le paragraphe en conservant les propriétés de style
+    # Sauvegarder les propriétés de style du premier run
+    if paragraph.runs:
+        first_run = paragraph.runs[0]
+        font = first_run.font
+        saved_style = {
+            'bold': font.bold,
+            'italic': font.italic,
+            'underline': font.underline,
+            'size': font.size,
+            'color': font.color.rgb if font.color else None,
+            'name': font.name
+        }
+    else:
+        saved_style = None
+    
+    # Effacer le paragraphe
     paragraph.clear()
-   
-    # Trouver le style du premier run existant ou utiliser Normal
-    base_style = paragraph.runs[0].style if paragraph.runs else 'Normal'
+    
+    # Recréer le texte avec les propriétés de style sauvegardées
     new_run = paragraph.add_run(full_text)
-    new_run.style = base_style
+    if saved_style:
+        new_run.font.bold = saved_style['bold']
+        new_run.font.italic = saved_style['italic']
+        new_run.font.underline = saved_style['underline']
+        if saved_style['size']:
+            new_run.font.size = saved_style['size']
+        if saved_style['color']:
+            new_run.font.color.rgb = saved_style['color']
+        if saved_style['name']:
+            new_run.font.name = saved_style['name']
 
 def process_headers_footers(section, replacements):
     """Traite récursivement tous les éléments des en-têtes/pieds de page"""
     # Traiter les paragraphes
     for header in section.header.paragraphs:
         remplacer_placeholders(header, replacements)
-   
+    
     for footer in section.footer.paragraphs:
         remplacer_placeholders(footer, replacements)
-   
+    
     # Traiter les tableaux
     for table in section.header.tables:
         for row in table.rows:
             for cell in row.cells:
                 for paragraph in cell.paragraphs:
                     remplacer_placeholders(paragraph, replacements)
-   
+    
     for table in section.footer.tables:
         for row in table.rows:
             for cell in row.cells:
@@ -222,18 +246,18 @@ def generer_document(row, template_bytes):
             '{{ref_session}}': str(row['Référence Session']),
             '{{date_evaluation}}': date_eval
         }
-       
+        
         # Remplacer dans les paragraphes principaux
         for p in doc.paragraphs:
             remplacer_placeholders(p, repl_apprenant)
-       
+        
         # Remplacer dans les tableaux
         for tbl in doc.tables:
             for r in tbl.rows:
                 for c in r.cells:
                     for p in c.paragraphs:
                         remplacer_placeholders(p, repl_apprenant)
-       
+        
         # Remplacer dans les en-têtes/pieds de page
         for section in doc.sections:
             process_headers_footers(section, repl_apprenant)
@@ -280,13 +304,13 @@ def generer_document(row, template_bytes):
                 if idx_para < len(doc.paragraphs):
                     p = doc.paragraphs[idx_para]
                     box = "☑" if reps.index(r) == 0 else "☐"
-                   
-                    # Sauvegarder le style
+                    
+                    # Sauvegarder le style de paragraphe
                     style = p.style
-                   
+                    
                     # Effacer et recréer le contenu
                     p.clear()
-                    new_run = p.add_run(f"{r['lettre']} - {r['texte']} {box}")
+                    p.add_run(f"{r['lettre']} - {r['texte']} {box}")
                     p.style = style
 
             if q_num in corr:
